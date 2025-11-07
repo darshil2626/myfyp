@@ -7,8 +7,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Dense, Flatten, Concatenate
-from tensorflow.keras.models import Model
+from keras.layers import Input, Dense, Flatten, Concatenate
+from keras.models import Model
 
 print("TensorFlow version:", tf.__version__)
 
