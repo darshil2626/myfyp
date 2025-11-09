@@ -187,8 +187,9 @@ def boundary_mask(u_interior, u_boundary, num_boundary_mask_points):
 def make_interior_encoder(num_latentdim, num_layers):
     """Interior encoder: [x, y, u] → ℓ"""
     inputs = Input(shape=(3,), name='interior_input') # shape is 3 to have one dim each for x, y, u
-    x = Dense(num_layers, activation='relu')(inputs)
-    x = Dense(num_layers, activation='relu')(x)
+    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(inputs)
+    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(x)
+    x = layers.Dropout(0.2)(x)
     outputs = Dense(num_latentdim, activation=None)(x)
     return Model(inputs, outputs, name='interior_encoder')
 
@@ -199,8 +200,9 @@ interior_encoder = make_interior_encoder(num_latentdim=8, num_layers=128)
 def make_boundary_encoder(num_latentdim, num_layers):
     """Boundary encoder: [x, y, u] → ℓ"""
     inputs = Input(shape=(3,), name='boundary_input') # shape is 3 to have one dim each for x, y, u
-    x = Dense(num_layers, activation='relu')(inputs)
-    x = Dense(num_layers, activation='relu')(x)
+    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(inputs)
+    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(x)
+    x = layers.Dropout(0.2)(x)
     outputs = Dense(num_latentdim, activation=None)(x)
     return Model(inputs, outputs, name='boundary_encoder')
 
@@ -242,8 +244,9 @@ def pde_solver(boundary_latent, A_matrix, patch_size=5, n_iters=20):
 def make_decoder(num_latentdim, num_layers):
     """Decoder: [x, y, ℓ] → u"""
     inputs = Input(shape=(num_latentdim + 2,), name='decoder_input') # shape is +2 to have the extra dim for x and y
-    x = Dense(num_layers, activation='relu')(inputs)
-    x = Dense(num_layers, activation='relu')(x)
+    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(inputs)
+    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(x)
+    x = layers.Dropout(0.2)(x)
     outputs = Dense(1, activation=None)(x) # output shape is 1 for just u
     return Model(inputs, outputs, name='decoder')
 
@@ -356,7 +359,7 @@ def train(interior_encoder, boundary_encoder, decoder,
     return interior_encoder, boundary_encoder, decoder, A_matrix, loss_history
 
 
-interior_encoder, boundary_encoder, decoder, A_matrix, loss_history = train(interior_encoder, boundary_encoder, decoder, interior_feats_tf, boundary_feats_tf, num_epochs=500, num_latentdim=8)
+interior_encoder, boundary_encoder, decoder, A_matrix, loss_history = train(interior_encoder, boundary_encoder, decoder, interior_feats_tf, boundary_feats_tf, num_epochs=1000, num_latentdim=8)
 
 # ============================================================================
 # SECTION 8: VALIDATION
