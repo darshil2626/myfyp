@@ -131,13 +131,13 @@ def split_interior_boundary(u_field, X, Y):
     y_boundary = []
     
     # Top edge (skip corners)
-    for j in range(1, Y.shape[1] - 1):
+    for j in range(Y.shape[1]):
         u_boundary.append(u_field[0, j])
         x_boundary.append(X[0, j])
         y_boundary.append(Y[0, j])
     
     # Bottom edge (skip corners)
-    for j in range(1, Y.shape[1] - 1):
+    for j in range(Y.shape[1]):
         u_boundary.append(u_field[-1, j])
         x_boundary.append(X[-1, j])
         y_boundary.append(Y[-1, j])
@@ -184,34 +184,34 @@ def boundary_mask(u_interior, u_boundary, num_boundary_mask_points):
 # SECTION 3: ENCODER
 # ============================================================================
 
-def make_interior_encoder(num_latentdim, num_layers):
+def make_interior_encoder(num_latentdim, num_units):
     """Interior encoder: [x, y, u] → ℓ"""
     inputs = Input(shape=(3,), name='interior_input') # shape is 3 to have one dim each for x, y, u
-    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(inputs)
-    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(x)
+    x = Dense(num_units, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(inputs)
+    x = Dense(num_units, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(x)
     x = layers.Dropout(0.2)(x)
     outputs = Dense(num_latentdim, activation=None)(x)
     return Model(inputs, outputs, name='interior_encoder')
 
 interior_feats = np.stack([x_interior, y_interior, u_interior], axis = -1)
 interior_feats_tf = tf.constant(interior_feats, dtype=tf.float32)
-interior_encoder = make_interior_encoder(num_latentdim=8, num_layers=128)
+interior_encoder = make_interior_encoder(num_latentdim=8, num_units=128)
 
-def make_boundary_encoder(num_latentdim, num_layers):
+def make_boundary_encoder(num_latentdim, num_units):
     """Boundary encoder: [x, y, u] → ℓ"""
     inputs = Input(shape=(3,), name='boundary_input') # shape is 3 to have one dim each for x, y, u
-    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(inputs)
-    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(x)
+    x = Dense(num_units, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(inputs)
+    x = Dense(num_units, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(x)
     x = layers.Dropout(0.2)(x)
     outputs = Dense(num_latentdim, activation=None)(x)
     return Model(inputs, outputs, name='boundary_encoder')
 
 boundary_feats = np.stack([x_boundary, y_boundary, u_boundary], axis = -1)
 boundary_feats_tf = tf.constant(boundary_feats, dtype=tf.float32)
-boundary_encoder = make_boundary_encoder(num_latentdim=8, num_layers=128)
+boundary_encoder = make_boundary_encoder(num_latentdim=8, num_units=128)
 
 # ============================================================================
-# SECTION 4: PDE SOLVER
+# SECTION 4: PDE SOLVER - CURRENTLY NOT USED (PDE SOLVED IN LOSS FUNC)
 # ============================================================================
 
 def pde_solver(boundary_latent, A_matrix, patch_size=5, n_iters=20):
@@ -241,16 +241,16 @@ def pde_solver(boundary_latent, A_matrix, patch_size=5, n_iters=20):
 # SECTION 5: DECODER
 # ============================================================================
 
-def make_decoder(num_latentdim, num_layers):
+def make_decoder(num_latentdim, num_units):
     """Decoder: [x, y, ℓ] → u"""
     inputs = Input(shape=(num_latentdim + 2,), name='decoder_input') # shape is +2 to have the extra dim for x and y
-    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(inputs)
-    x = Dense(num_layers, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(x)
+    x = Dense(num_units, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(inputs)
+    x = Dense(num_units, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))(x)
     x = layers.Dropout(0.2)(x)
     outputs = Dense(1, activation=None)(x) # output shape is 1 for just u
     return Model(inputs, outputs, name='decoder')
 
-decoder = make_decoder(num_latentdim=8, num_layers=128)
+decoder = make_decoder(num_latentdim=8, num_units=128)
 
 # ============================================================================
 # SECTION 6: LOSS FUNCTION
@@ -359,7 +359,7 @@ def train(interior_encoder, boundary_encoder, decoder,
     return interior_encoder, boundary_encoder, decoder, A_matrix, loss_history
 
 
-interior_encoder, boundary_encoder, decoder, A_matrix, loss_history = train(interior_encoder, boundary_encoder, decoder, interior_feats_tf, boundary_feats_tf, num_epochs=1000, num_latentdim=8)
+interior_encoder, boundary_encoder, decoder, A_matrix, loss_history = train(interior_encoder, boundary_encoder, decoder, interior_feats_tf, boundary_feats_tf, num_epochs=2000, num_latentdim=8)
 
 # ============================================================================
 # SECTION 8: VALIDATION
@@ -529,7 +529,7 @@ def plot_validation_results(U_true, u_pred, error_map, time_idx, save_path=None)
     plt.colorbar(im1, ax=axes[1])
     
     # Error map
-    im2 = axes[2].imshow(error_map, origin='lower', cmap='hot')
+    im2 = axes[2].imshow(error_map, origin='lower', cmap='hot_r')
     axes[2].set_title('Absolute Error', fontsize=12, fontweight='bold')
     axes[2].set_xlabel('y')
     axes[2].set_ylabel('x')
@@ -563,6 +563,7 @@ def plot_training_history(loss_history):
     plt.tight_layout()
     plt.show()
 
+plot_training_history(loss_history)
 
 def plot_error_distribution(error_map):
     """
@@ -580,5 +581,6 @@ def plot_error_distribution(error_map):
     plt.tight_layout()
     plt.show()
     
+plot_error_distribution(error_map)
     
 a = 0
