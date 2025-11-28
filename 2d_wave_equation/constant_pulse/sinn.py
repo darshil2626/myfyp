@@ -359,7 +359,7 @@ def train(interior_encoder, boundary_encoder, decoder,
     return interior_encoder, boundary_encoder, decoder, A_matrix, loss_history
 
 
-interior_encoder, boundary_encoder, decoder, A_matrix, loss_history = train(interior_encoder, boundary_encoder, decoder, interior_feats_tf, boundary_feats_tf, num_epochs=2000, num_latentdim=8)
+interior_encoder, boundary_encoder, decoder, A_matrix, loss_history = train(interior_encoder, boundary_encoder, decoder, interior_feats_tf, boundary_feats_tf, num_epochs=10, num_latentdim=8)
 
 # ============================================================================
 # SECTION 8: VALIDATION
