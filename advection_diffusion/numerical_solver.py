@@ -1,217 +1,433 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from matplotlib.gridspec import GridSpec
 
-
-# ============================================================
-#  Initial condition: two pulses on the left
-# ============================================================
-
-def initial_condition(X, Y):
+class AdvectionDiffusion2D:
     """
-    Two positive Gaussian pulses on the left half of the domain.
-    They will be advected rightwards and pulled towards a meeting point.
+    RK4 Solver for 2D advection-diffusion equation:
+    ∂u/∂t + vx*∂u/∂x + vy*∂u/∂y = D*(∂²u/∂x² + ∂²u/∂y²)
+    
+    Uses Runge-Kutta 4th order for time integration (much more accurate than Forward Euler)
     """
-    g1 = np.exp(-(((X - 0.25)**2 + (Y - 0.25)**2) / 0.09))  # bottom-left
-    g2 = np.exp(-(((X - 0.75)**2 + (Y - 0.75)**2) / 0.09))  # top-left
-    return g1 + g2
-
-
-# ============================================================
-#  Solver: 2D advection–diffusion with spatially varying v(x,y)
-# ============================================================
-
-def solve_advection_diffusion_2d(
-    nx=101,
-    ny=101,
-    Lx=1.0,
-    Ly=1.0,
-    v_bg=0.3,        # uniform rightward drift
-    alpha=1.0,       # strength of convergence towards (x_c, y_c)
-    kappa=0.001,     # diffusion coefficient
-    T=1.0,           # final time
-    dt=None,         # if None, chosen automatically for stability
-    save_every=5,    # save every N time steps
-):
-    """
-    Solve u_t + v·∇u = kappa ∆u on [0,Lx]×[0,Ly] with u=0 on boundaries.
-
-    Velocity field:
-        v(x,y) = (v_bg, 0) - alpha * (x - x_c, y - y_c)
-    where (x_c, y_c) is an off-centre "meeting point".
-
-    Returns
-    -------
-    x, y : 1D arrays
-    t_snap : (nt_snap,) array of times
-    U_snap : (nt_snap, ny, nx) array of solution snapshots
-    """
-
-    # ---------------- Grid ----------------
-    x = np.linspace(0, Lx, nx)
-    y = np.linspace(0, Ly, ny)
-    dx = x[1] - x[0]
-    dy = y[1] - y[0]
-    X, Y = np.meshgrid(x, y)
-
-    # ---------------- Velocity field ----------------
-    x_c = 0.7 * Lx
-    y_c = 0.5 * Ly
-
-    vx = v_bg - alpha * (X - x_c)
-    vy =      - alpha * (Y - y_c)
-
-    # ---------------- Time step (stability) ----------------
-    vmax_x = np.max(np.abs(vx))
-    vmax_y = np.max(np.abs(vy))
-
-    adv_term = vmax_x / dx + vmax_y / dy
-    diff_term = 2.0 * kappa * (1.0 / dx**2 + 1.0 / dy**2)
-
-    if dt is None:
-        denom = adv_term + diff_term
-        if denom == 0.0:
-            dt = 0.4 * min(dx, dy)**2 / (4 * kappa + 1e-12)
+    
+    def __init__(self, Lx=10.0, Ly=10.0, nx=200, ny=200, D=0.1, cfl=0.5):
+        """
+        Initialize the RK4 solver
+        
+        Parameters:
+        -----------
+        Lx, Ly : float
+            Domain size in x and y directions
+        nx, ny : int
+            Number of grid points in x and y directions
+        D : float
+            Diffusion coefficient
+        """
+        self.Lx = Lx
+        self.Ly = Ly
+        self.nx = nx
+        self.ny = ny
+        self.D = D
+        self.cfl = cfl
+        
+        # Create grid
+        self.dx = Lx / (nx - 1)
+        self.dy = Ly / (ny - 1)
+        self.x = np.linspace(0, Lx, nx)
+        self.y = np.linspace(0, Ly, ny)
+        self.X, self.Y = np.meshgrid(self.x, self.y)
+        
+        # Initialize solution array
+        self.u = np.zeros((ny, nx))
+        
+        # Velocity field (will be set by user)
+        self.vx = np.zeros((ny, nx))
+        self.vy = np.zeros((ny, nx))
+        
+        # Time stepping parameters
+        self.dt = None
+        
+    def set_timestep(self):
+        """
+        Set timestep based on CFL condition
+        RK4 has better stability, so we can use a larger CFL factor
+        """
+        vmax = max(np.max(np.abs(self.vx)), np.max(np.abs(self.vy)), 1e-10)
+        dt_advection = self.cfl * min(self.dx, self.dy) / vmax
+        dt_diffusion = 0.25 * min(self.dx**2, self.dy**2) / (2 * self.D)
+        
+        self.dt = min(dt_advection, dt_diffusion)
+        print(f"Time step: dt = {self.dt:.6f}")
+        
+    def add_gaussian_pulse(self, x0, y0, sigma=0.5, amplitude=1.0):
+        """Add a Gaussian pulse to the solution"""
+        gaussian = amplitude * np.exp(-((self.X - x0)**2 + (self.Y - y0)**2) / (2 * sigma**2))
+        self.u += gaussian
+        
+    def set_velocity_field(self, vx, vy):
+        """Set the velocity field"""
+        if callable(vx):
+            self.vx = vx(self.X, self.Y)
         else:
-            dt = 0.4 / denom
+            self.vx = vx * np.ones_like(self.X)
+            
+        if callable(vy):
+            self.vy = vy(self.X, self.Y)
+        else:
+            self.vy = vy * np.ones_like(self.Y)
+            
+        self.set_timestep()
+        
+    def check_divergence(self):
+        """Check if velocity field satisfies continuity"""
+        dvx_dx = np.gradient(self.vx, self.dx, axis=1)
+        dvy_dy = np.gradient(self.vy, self.dy, axis=0)
+        div = dvx_dx + dvy_dy
+        max_div = np.max(np.abs(div))
+        print(f"Maximum divergence: {max_div:.6f}")
+        if max_div > 1e-10:
+            print("FLOW IS NOT INCOMPRESSIBLE!")
+        return max_div
+    
+    def compute_rhs(self, u):
+        """
+        Compute the right-hand side: du/dt = f(u)
+        
+        This includes:
+        - Advection: -vx*∂u/∂x - vy*∂u/∂y (using upwind scheme)
+        - Diffusion: D*(∂²u/∂x² + ∂²u/∂y²) (using central differences)
+        
+        Parameters:
+        -----------
+        u : array
+            Current concentration field
+            
+        Returns:
+        --------
+        dudt : array
+            Time derivative at each point
+        """
+        dudt = np.zeros_like(u)
+        
+        # Loop over interior points (boundaries handled separately)
+        for i in range(1, self.ny - 1):
+            for j in range(1, self.nx - 1):
+                
+                # ========== ADVECTION (Upwind Scheme) ==========
+                # X-direction
+                if self.vx[i, j] > 0:  # Flow to the right
+                    dudx = (u[i, j] - u[i, j-1]) / self.dx  # Look left (upwind)
+                else:  # Flow to the left
+                    dudx = (u[i, j+1] - u[i, j]) / self.dx  # Look right (upwind)
+                
+                # Y-direction
+                if self.vy[i, j] > 0:  # Flow upward
+                    dudy = (u[i, j] - u[i-1, j]) / self.dy  # Look down (upwind)
+                else:  # Flow downward
+                    dudy = (u[i+1, j] - u[i, j]) / self.dy  # Look up (upwind)
+                
+                advection = -(self.vx[i, j] * dudx + self.vy[i, j] * dudy)
+                
+                # ========== DIFFUSION (Central Differences) ==========
+                d2udx2 = (u[i, j+1] - 2*u[i, j] + u[i, j-1]) / (self.dx**2)
+                d2udy2 = (u[i+1, j] - 2*u[i, j] + u[i-1, j]) / (self.dy**2)
+                
+                diffusion = self.D * (d2udx2 + d2udy2)
+                
+                # ========== COMBINED ==========
+                dudt[i, j] = advection + diffusion
+        
+        # Apply boundary conditions to dudt
+        dudt = self.apply_bc(dudt)
+        
+        return dudt
+    
+    def apply_bc(self, u):
+        """
+        Apply zero-flux boundary conditions
+        
+        This is crucial for RK4 because we compute intermediate states
+        that also need to satisfy boundary conditions
+        """
+        u_bc = u.copy()
+        u_bc[0, :] = u_bc[1, :]      # Bottom
+        u_bc[-1, :] = u_bc[-2, :]    # Top
+        u_bc[:, 0] = u_bc[:, 1]      # Left
+        u_bc[:, -1] = u_bc[:, -2]    # Right
+        return u_bc
+    
+    def step(self):
+        """
+        Perform one RK4 time step: uⁿ → uⁿ⁺¹
+        
+        RK4 Algorithm:
+        k₁ = f(uⁿ)
+        k₂ = f(uⁿ + dt*k₁/2)
+        k₃ = f(uⁿ + dt*k₂/2)
+        k₄ = f(uⁿ + dt*k₃)
+        uⁿ⁺¹ = uⁿ + (dt/6)(k₁ + 2k₂ + 2k₃ + k₄)
+        """
+        u_n = self.u.copy()
+        dt = self.dt
+        
+        # Stage 1: Evaluate at current state
+        k1 = self.compute_rhs(u_n)
+        
+        # Stage 2: Evaluate at midpoint using k1
+        u_temp = u_n + 0.5 * dt * k1
+        u_temp = self.apply_bc(u_temp)
+        k2 = self.compute_rhs(u_temp)
+        
+        # Stage 3: Evaluate at midpoint using k2 (better estimate)
+        u_temp = u_n + 0.5 * dt * k2
+        u_temp = self.apply_bc(u_temp)
+        k3 = self.compute_rhs(u_temp)
+        
+        # Stage 4: Evaluate at endpoint using k3
+        u_temp = u_n + dt * k3
+        u_temp = self.apply_bc(u_temp)
+        k4 = self.compute_rhs(u_temp)
+        
+        # Final update: weighted average of all slopes
+        # Midpoints get double weight
+        self.u = u_n + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+        
+        # Apply boundary conditions to final state
+        self.u = self.apply_bc(self.u)
+        
+    def solve(self, t_final):
+        """
+        Solve the equation up to time t_final using RK4
+        
+        Parameters:
+        -----------
+        t_final : float
+            Final time
+        n_snapshots : int
+            Number of snapshots to save
+            
+        Returns:
+        --------
+        times : array
+            Times at which snapshots were saved
+        snapshots : list of arrays
+            Solution snapshots
+        """
+        n_steps = int(t_final / self.dt)
+        times = []
+        snapshots = []
+        
+        print(f"\nStarting RK4 simulation...")
+        print(f"Total steps: {n_steps}")
+        
+        for step in range(n_steps):
+            times.append(step * self.dt)
+            snapshots.append(self.u.copy())
+            self.step()
+        
+        # Save final snapshot
+        times.append(n_steps * self.dt)
+        snapshots.append(self.u.copy())
+        
+        return np.array(times), snapshots
 
-    nt = int(np.ceil(T / dt))
-    dt = T / nt  # adjust so that we land exactly on T
 
-    print(f"Using dt = {dt:.3e}, nt = {nt}")
-
-    # ---------------- Initial condition ----------------
-    u = initial_condition(X, Y)
-
-    # Dirichlet boundaries u = 0
-    u[0, :]  = 0.0
-    u[-1, :] = 0.0
-    u[:, 0]  = 0.0
-    u[:, -1] = 0.0
-
-    # ---------------- Time integration ----------------
-    U_list = []
-    t_list = []
-
-    # save initial state
-    U_list.append(u.copy())
-    t_list.append(0.0)
-
-    for n in range(1, nt + 1):
-        un = u.copy()
-
-        # interior slices
-        u_c = un[1:-1, 1:-1]
-        u_l = un[1:-1, 0:-2]
-        u_r = un[1:-1, 2:]
-        u_d = un[0:-2, 1:-1]
-        u_u = un[2:,   1:-1]
-
-        vx_c = vx[1:-1, 1:-1]
-        vy_c = vy[1:-1, 1:-1]
-
-        # upwind in x
-        du_dx = np.where(
-            vx_c >= 0.0,
-            (u_c - u_l) / dx,     # wind from left -> backward difference
-            (u_r - u_c) / dx,     # wind from right -> forward difference
-        )
-
-        # upwind in y
-        du_dy = np.where(
-            vy_c >= 0.0,
-            (u_c - u_d) / dy,     # wind from below
-            (u_u - u_c) / dy,     # wind from above
-        )
-
-        # diffusion (central differences)
-        d2u_dx2 = (u_r - 2.0 * u_c + u_l) / dx**2
-        d2u_dy2 = (u_u - 2.0 * u_c + u_d) / dy**2
-
-        # update interior
-        u[1:-1, 1:-1] = u_c + dt * (
-            -vx_c * du_dx
-            -vy_c * du_dy
-            + kappa * (d2u_dx2 + d2u_dy2)
-        )
-
-        # re-apply Dirichlet BCs
-        u[0, :]  = 0.0
-        u[-1, :] = 0.0
-        u[:, 0]  = 0.0
-        u[:, -1] = 0.0
-
-        # save snapshot
-        if (n % save_every == 0) or (n == nt):
-            U_list.append(u.copy())
-            t_list.append(n * dt)
-
-    U_snap = np.stack(U_list, axis=0)   # (nt_snap, ny, nx)
-    t_snap = np.array(t_list)           # (nt_snap,)
-
-    return x, y, t_snap, U_snap
-
-
-# ============================================================
-#  Plot snapshots at evenly spaced times with shared colorbar
-# ============================================================
-
-def plot_snapshots(x, y, t, U, n_plots=5):
+def create_velocity_field_uniform(X, Y, v_right=0.6, v_down=-0.15):
     """
-    Plot n_plots snapshots of U with a constant color scale and shared colorbar.
+    Create uniform incompressible velocity field
     """
-    NT = len(U)
-    k_frames = np.linspace(0, NT - 1, n_plots, dtype=int)
+    vx = v_right * np.ones_like(X)
+    vy = v_down * np.ones_like(Y)
+    return vx, vy
 
-    fig, axes = plt.subplots(1, n_plots, figsize=(20, 3), constrained_layout=True)
+def create_visualisation(X, Y, snapshots, times, n_indices, vmax):
+    """
+    Create a grid of filled contour plots showing solution evolution
+    with a unified colorbar spanning all plots
+    
+    Parameters:
+    -----------
+    X, Y : 2D arrays
+        Spatial grid
+    snapshots : list of 2D arrays
+        Solution fields at different times
+    times : 1D array
+        Time values
+    n_indices : int
+        Number of snapshots to display
+    vmax : float
+        Maximum value for colorbar scale
+    """
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+    
+    indices = np.linspace(0, len(snapshots) - 1, n_indices, dtype=int).tolist()
+    ncols = int(np.ceil(len(indices) / 2))
 
-    # global colour limits
-    umin = U.min()
-    umax = U.max()
+    fig = plt.figure(figsize=(16, 10))
+    gs = GridSpec(2, ncols + 1, width_ratios=[1]*ncols + [0.05], figure=fig)
 
-    # if you want symmetric limits around 0, uncomment:
-    # m = max(abs(umin), abs(umax))
-    # umin, umax = -m, m
+    for i, idx in enumerate(indices):
+        row = i // ncols
+        col = i % ncols
+        ax = fig.add_subplot(gs[row, col])
+        
+        # Create filled contour plot
+        ax.contourf(X, Y, snapshots[idx], levels=20,
+                    cmap='hot', vmin=0, vmax=vmax)
+        ax.contour(X, Y, snapshots[idx], levels=8,
+                   colors='black', linewidths=0.5, alpha=0.3)
+        ax.set_title(f't = {times[idx]:.2f}')
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        ax.set_aspect('equal')
 
-    for ax, k in zip(axes, k_frames):
-        # use extent so axes are in physical coordinates
-        cs = ax.imshow(
-            U[k],
-            origin='lower',
-            extent=[x[0], x[-1], y[0], y[-1]],
-            aspect='auto',
-            cmap='RdBu_r',
-            vmin=umin,
-            vmax=umax,
-        )
-        ax.set_title(f"t = {t[k]:.2f}s")
-        ax.set_xlabel("x")
-        ax.set_ylabel("y")
+    # Create colorbar with full range [0, vmax]
+    cax = fig.add_subplot(gs[:, -1])
+    sm = ScalarMappable(cmap='hot', norm=Normalize(vmin=0, vmax=vmax))
+    sm.set_array([])
+    fig.colorbar(sm, cax=cax)
+    cax.set_ylabel('u(x,y,t)', rotation=270, labelpad=15)
 
-    # one shared colorbar for all subplots
-    cbar = fig.colorbar(cs, ax=axes.ravel().tolist(), location='right')
-    cbar.set_label("u(x,y,t)")
+    fig.suptitle('Evolution with RK4 Time Integration\n(4th order accurate in time)',
+                 fontsize=14, fontweight='bold')
 
-    fig.suptitle("2D Advection–Diffusion: converging pulses + rightward drift")
     plt.tight_layout()
-    plt.show()
+    plt.savefig('advection_diffusion_rk4_evolution.png', dpi=150, bbox_inches='tight')
+    print("✓ Evolution figure saved!")
 
 
-# ============================================================
-#  Run as a script
-# ============================================================
 
-if __name__ == "__main__":
-    x, y, t, U = solve_advection_diffusion_2d(
-        nx=101,
-        ny=101,
-        Lx=1.0,
-        Ly=1.0,
-        v_bg=0.3,
-        alpha=1.0,
-        kappa=0.001,
-        T=3.0,
-        dt=None,
-        save_every=5,
-    )
+def crop_data(X, Y, snapshots, margin_x, margin_y):
+    """
+    Crop solution snapshots by removing margins from all sides
+    
+    Parameters:
+    -----------
+    X, Y : 2D arrays
+        Spatial grid
+    snapshots : list of 2D arrays
+        Solution fields to crop
+    margin_x, margin_y : float
+        Physical distance to remove from each side in x and y
+        
+    Returns:
+    --------
+    X_crop, Y_crop : 2D arrays
+        Cropped grids
+    snapshots_crop : list of 2D arrays
+        Cropped snapshots
+    """
+    # Find indices to keep
+    ix_keep = np.where((X[0, :] >= margin_x) & (X[0, :] <= X[0, -1] - margin_x))[0]
+    iy_keep = np.where((Y[:, 0] >= margin_y) & (Y[:, 0] <= Y[-1, 0] - margin_y))[0]
+    
+    X_crop = X[np.ix_(iy_keep, ix_keep)]
+    Y_crop = Y[np.ix_(iy_keep, ix_keep)]
+    snapshots_crop = [s[np.ix_(iy_keep, ix_keep)] for s in snapshots]
+    
+    return X_crop, Y_crop, snapshots_crop
 
-    plot_snapshots(x, y, t, U, n_plots=5)
+
+
+if __name__ == "__main__":    
+    # Initialize solver
+    print("\nInitializing solver...")
+    solver = AdvectionDiffusion2D(Lx=12.0, Ly=8.0, nx=150, ny=120, D=0.08, cfl=0.5)
+    
+    # Add two Gaussian pulses
+    print("Adding two Gaussian pulses...")
+    solver.add_gaussian_pulse(x0=2.0, y0=3.0, sigma=0.4, amplitude=1.0)
+    solver.add_gaussian_pulse(x0=3.0, y0=5.0, sigma=0.4, amplitude=1.0)
+    
+    # Set uniform velocity field (incompressible)
+    print("Setting up velocity field...")
+    vx, vy = create_velocity_field_uniform(solver.X, solver.Y, v_right=0.6, v_down=-0.15)
+    solver.set_velocity_field(vx, vy)
+    
+    # Check divergence
+    print("\nChecking incompressibility...")
+    div = solver.check_divergence()
+    if div < 1e-10:
+        print("✓ Flow is incompressible (∇·v ≈ 0)")
+    
+    # Solve
+    times, snapshots = solver.solve(t_final=5.0)
+    
+    vmax = max([s.max() for s in snapshots])
+    create_visualisation(solver.X, solver.Y, snapshots, times, 10, vmax)
+    
+    
+    '''# Create visualization
+    print("\nCreating visualizations...")
+    fig = plt.figure(figsize=(16, 10))
+    
+    # Main animation plot
+    ax1 = plt.subplot(2, 2, (1, 2))
+    
+    # Velocity field plot
+    ax2 = plt.subplot(2, 2, 3)
+    skip = 10
+    ax2.quiver(solver.X[::skip, ::skip], solver.Y[::skip, ::skip], 
+               solver.vx[::skip, ::skip], solver.vy[::skip, ::skip], 
+               alpha=0.7, color='navy')
+    ax2.set_xlabel('x', fontsize=11)
+    ax2.set_ylabel('y', fontsize=11)
+    ax2.set_title('Velocity Field\n(Uniform - Incompressible)', fontsize=12)
+    ax2.set_aspect('equal')
+    ax2.set_xlim(0, solver.Lx)
+    ax2.set_ylim(0, solver.Ly)
+    ax2.grid(True, alpha=0.3)
+    ax2.text(0.5, 7.5, f'$v_x$ = {vx[0,0]:.2f}\n$v_y$ = {vy[0,0]:.2f}', 
+             fontsize=10, bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.5))
+    ax2.text(6, 7.5, 'RK4 Method\n(4th order accurate)', 
+             fontsize=10, bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7),
+             fontweight='bold')
+    
+    # Mass conservation plot
+    ax3 = plt.subplot(2, 2, 4)
+    
+    def animate(frame):
+        ax1.clear()
+        ax3.clear()
+        
+        # Main concentration plot
+        cf = ax1.contourf(solver.X, solver.Y, snapshots[frame], levels=20, 
+                          cmap='RdBu_r', vmin=0, vmax=vmax)
+        ax1.contour(solver.X, solver.Y, snapshots[frame], levels=10, 
+                   colors='black', linewidths=0.5, alpha=0.3)
+        ax1.set_xlabel('x', fontsize=11)
+        ax1.set_ylabel('y', fontsize=11)
+        ax1.set_title(f'Concentration Field (RK4) at t = {times[frame]:.2f}', fontsize=12)
+        ax1.set_aspect('equal')
+        
+        # Add colorbar on first frame
+        if frame == 0:
+            cbar = plt.colorbar(cf, ax=ax1)
+            cbar.set_label('Concentration', fontsize=10)
+        
+        # Total mass over time
+        masses = [np.sum(s) * solver.dx * solver.dy for s in snapshots[:frame+1]]
+        ax3.plot(times[:frame+1], masses, 'b-', linewidth=2)
+        ax3.set_xlabel('Time', fontsize=11)
+        ax3.set_ylabel('Total Mass', fontsize=11)
+        ax3.set_title('Mass Conservation Check', fontsize=12)
+        ax3.grid(True, alpha=0.3)
+        ax3.set_xlim(0, times[-1])
+        if len(masses) > 0:
+            mass_range = max(masses) - min(masses)
+            if mass_range > 0:
+                ax3.set_ylim(min(masses) - 0.1*mass_range, max(masses) + 0.1*mass_range)
+        
+        return ax1, ax3
+    
+    print("Rendering animation...")
+    anim = FuncAnimation(fig, animate, frames=len(snapshots), interval=100, blit=False)
+    
+    plt.tight_layout()
+    
+    # Save animation
+    print("Saving animation...")
+    anim.save('advection_diffusion_rk4.gif', writer='pillow', fps=10)
+    print("✓ Animation saved!")'''
