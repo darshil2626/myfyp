@@ -57,14 +57,26 @@ class sinn():
         self.mask_boundary = mask_bnd
         self.mask_fd_safe_interior = safe & mask_int
     
+    @staticmethod
+    def _build_coder(num_units, num_layers, input_shape, output_shape, name, dropout, l2_reg):
+        """Build encoder/decoder network with optional dropout and L2 regularization."""
+        inputs = Input(shape=(input_shape,))
+        x = Dense(num_units, activation='tanh', kernel_regularizer=keras.regularizers.l2(l2_reg))(inputs)
+        for _ in range(num_layers - 1):
+            x = Dense(num_units, activation='tanh', kernel_regularizer=keras.regularizers.l2(l2_reg))(x)
+        if dropout and dropout > 0.0:
+            x = layers.Dropout(dropout)(x)
+        outputs = Dense(output_shape, activation=None)(x)
+        return Model(inputs, outputs, name=name)
+    
     def build_models(self, num_latentdim, num_units, num_layers, dropout, l2_reg, lr):
-        self.interior_encoder = build_coder(num_units, num_layers, input_shape=4, 
+        self.interior_encoder = self._build_coder(num_units, num_layers, input_shape=4, 
                                            output_shape=num_latentdim, name='interior encoder', 
                                            dropout=dropout, l2_reg=l2_reg)
-        self.boundary_encoder = build_coder(num_units, num_layers, input_shape=4, 
+        self.boundary_encoder = self._build_coder(num_units, num_layers, input_shape=4, 
                                            output_shape=num_latentdim, name='boundary encoder', 
                                            dropout=dropout, l2_reg=l2_reg)  
-        self.decoder = build_coder(num_units, num_layers, input_shape=num_latentdim, 
+        self.decoder = self._build_coder(num_units, num_layers, input_shape=num_latentdim, 
                                    output_shape=1, name='decoder', 
                                    dropout=dropout, l2_reg=l2_reg)
         
@@ -199,8 +211,8 @@ class sinn():
             self.patch_boundary_global_boundary_values[k] = patch_boundary_global_boundary_values
             self.patch_boundary_global_interior_idx[k] = patch_boundary_global_interior_idx_tyx
             self.patch_boundary_global_interior_values[k] = patch_boundary_global_interior_values
-
-    def stack_features_from_idx(self, idx_tyx):
+    
+    def _stack_features_from_idx(self, idx_tyx):
         """Optimized feature stacking with precomputed normalization."""
         idx_tyx = np.asarray(idx_tyx, dtype=np.int32)
         if idx_tyx.size == 0:
@@ -221,7 +233,7 @@ class sinn():
     
     def stack_features_from_idx_batch(self, idx_list):
         """Batch version of stack_features_from_idx for multiple patches."""
-        return [self.stack_features_from_idx(idx) for idx in idx_list]
+        return [self._stack_features_from_idx(idx) for idx in idx_list]
     
     def compute_pde_loss(
         self,
@@ -441,9 +453,9 @@ class sinn():
                 patch_boundary_global_interior_idx_tyx = self.patch_boundary_global_interior_idx[patch_k]
 
                 # Build encoder inputs
-                patch_center_features = self.stack_features_from_idx(patch_center_idx_tyx[None, :])
-                patch_boundary_features_global_boundary = self.stack_features_from_idx(patch_boundary_global_boundary_idx_tyx)
-                patch_boundary_features_global_interior = self.stack_features_from_idx(patch_boundary_global_interior_idx_tyx)
+                patch_center_features = self._stack_features_from_idx(patch_center_idx_tyx[None, :])
+                patch_boundary_features_global_boundary = self._stack_features_from_idx(patch_boundary_global_boundary_idx_tyx)
+                patch_boundary_features_global_interior = self._stack_features_from_idx(patch_boundary_global_interior_idx_tyx)
 
                 with tf.GradientTape() as tape:
                     # Interior encoder for patch center
@@ -530,18 +542,6 @@ class sinn():
         return loss_history
 
 
-def build_coder(num_units, num_layers, input_shape, output_shape, name, dropout, l2_reg):
-    """Build encoder/decoder network with optional dropout and L2 regularization."""
-    inputs = Input(shape=(input_shape,))
-    x = Dense(num_units, activation='tanh', kernel_regularizer=keras.regularizers.l2(l2_reg))(inputs)
-    for _ in range(num_layers - 1):
-        x = Dense(num_units, activation='tanh', kernel_regularizer=keras.regularizers.l2(l2_reg))(x)
-    if dropout and dropout > 0.0:
-        x = layers.Dropout(dropout)(x)
-    outputs = Dense(output_shape, activation=None)(x)
-    return Model(inputs, outputs, name=name)
-
-
 if __name__ == "__main__":
     # Constants and hyperparameters
     b_thick = 1
@@ -553,9 +553,9 @@ if __name__ == "__main__":
     dropout = 0.0
     l2_reg = 1e-5
     lr = 1e-3
-    patch_dim = [6, 6, 6]  # (x, y, t)
-    num_patches = 100
-    epochs = 5
+    patch_dim = [4, 4, 4]  # (x, y, t)
+    num_patches = 50
+    epochs = 3
     
     # Load variables from pickle file
     with open(r'c:\Users\darsh\Documents\fyp\myfyp\advection_diffusion\time_in_encoders_only\numerical_data.pkl', 'rb') as f:
