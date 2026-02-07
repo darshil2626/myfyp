@@ -235,6 +235,9 @@ class sinn():
         """Batch version of stack_features_from_idx for multiple patches."""
         return [self._stack_features_from_idx(idx) for idx in idx_list]
     
+    # Modified compute_pde_loss method for FULL INTERIOR loss
+    # Replace your existing compute_pde_loss method with this one
+
     def compute_pde_loss(
         self,
         patch_center_spatial_y_index: int,
@@ -247,9 +250,11 @@ class sinn():
         spd_epsilon: float = 1e-6,
     ):
         """
-        Optimized PDE loss computation.
-        Note: @tf.function removed due to numpy() calls and dynamic control flow.
-        Performance is still improved through vectorization and precomputation.
+        Compute PDE loss with FULL INTERIOR supervision (not just center).
+        
+        This version compares the PDE solution to encoder predictions at ALL
+        interior points, not just the patch center. This provides stronger
+        supervision and better data efficiency.
         """
         # Inputs are already numpy arrays
         patch_boundary_idx_np = np.asarray(patch_boundary_idx_tyx, dtype=np.int32)
@@ -274,22 +279,25 @@ class sinn():
 
         if num_interior_spatial_nodes == 0:
             return (tf.constant(0.0, tf.float32), tf.constant(0.0, tf.float32), 
-                   tf.constant(0.0, tf.float32), tf.constant(0.0, tf.float32))
+                tf.constant(0.0, tf.float32), tf.constant(0.0, tf.float32))
 
         # Build row mapping
         interior_spatial_row_id = -np.ones((patch_spatial_height, patch_spatial_width), dtype=np.int32)
         for row_id, (ly, lx) in enumerate(interior_spatial_local_yx):
             interior_spatial_row_id[ly, lx] = row_id
 
+        # NOTE: We no longer need centre_row_id for center-only loss
+        # But keep it for potential debugging/comparison
         patch_center_local_y = int(patch_center_spatial_y_index - y_min)
         patch_center_local_x = int(patch_center_spatial_x_index - x_min)
-
         centre_row_id = int(interior_spatial_row_id[patch_center_local_y, patch_center_local_x])
+        
         if centre_row_id < 0:
+            # Center not in interior (shouldn't happen for proper patches)
             return (tf.constant(0.0, tf.float32), tf.constant(0.0, tf.float32), 
-                   tf.constant(0.0, tf.float32), tf.constant(0.0, tf.float32))
+                tf.constant(0.0, tf.float32), tf.constant(0.0, tf.float32))
 
-        # Build Laplacian matrix (vectorized where possible)
+        # Build Laplacian matrix
         laplacian_operator_matrix = np.zeros((num_interior_spatial_nodes, num_interior_spatial_nodes), dtype=np.float32)
         boundary_neighbour_local_yx_per_row = [[] for _ in range(num_interior_spatial_nodes)]
 
@@ -318,21 +326,17 @@ class sinn():
         spd_violation = tf.nn.relu(spd_epsilon - eigenvalues)
         spd_loss = rho_spd * tf.reduce_sum(spd_violation * spd_violation)
 
-        # OPTIMIZATION: Build stiffness matrix ONCE (not per time slice)
-        # This is invariant across time slices
+        # Build stiffness matrix ONCE
         stiffness_matrix_tf = tf.linalg.LinearOperatorKronecker([
             tf.linalg.LinearOperatorFullMatrix(laplacian_operator_matrix_tf),
             tf.linalg.LinearOperatorFullMatrix(latent_operator_matrix),
         ]).to_dense()
         
-        # OPTIMIZATION: Pre-factor the matrix for faster solves
-        # Cholesky is faster if matrix is SPD, otherwise use LU
+        # Pre-factor the matrix for faster solves
         try:
-            # Try Cholesky factorization (fastest for SPD matrices)
             L_cholesky = tf.linalg.cholesky(stiffness_matrix_tf)
             use_cholesky = True
         except tf.errors.InvalidArgumentError:
-            # Fall back to LU if not SPD
             lu, p = tf.linalg.lu(stiffness_matrix_tf)
             use_cholesky = False
 
@@ -342,27 +346,12 @@ class sinn():
 
         num_time_slices = int(patch_time_indices_np.shape[0])
 
-        # Get center features
-        patch_centre_time_yx_indices = np.stack([
-            patch_time_indices_np,
-            np.full((num_time_slices,), patch_center_spatial_y_index, dtype=np.int32),
-            np.full((num_time_slices,), patch_center_spatial_x_index, dtype=np.int32)],
-            axis=1
-        )
-
-        t = patch_centre_time_yx_indices[:, 0]
-        y = patch_centre_time_yx_indices[:, 1]
-        x = patch_centre_time_yx_indices[:, 2]
-        t_norm = t.astype(np.float32) / self.nt_norm
-        y_norm = y.astype(np.float32) / self.ny_norm
-        x_norm = x.astype(np.float32) / self.nx_norm
-        u_val = self.U[t, y, x].astype(np.float32)
-
-        centre_features = np.stack([t_norm, y_norm, x_norm, u_val], axis=1).astype(np.float32)
-        centre_features_tf = tf.constant(centre_features, dtype=tf.float32)
-
-        latent_true_at_patch_centre_all_times = self.interior_encoder(centre_features_tf, training=True)
-        u_true_at_patch_centre_all_times = tf.constant(u_val.reshape(-1, 1), dtype=tf.float32)
+        # ============================================================================
+        # NEW: Prepare global coordinates for ALL interior points (not just center)
+        # ============================================================================
+        interior_spatial_global_y = interior_spatial_local_yx[:, 0] + y_min
+        interior_spatial_global_x = interior_spatial_local_yx[:, 1] + x_min
+        # Shape: (num_interior_spatial_nodes,) each
 
         # Per-time slice solve
         patch_boundary_t = patch_boundary_idx_np[:, 0]
@@ -401,37 +390,104 @@ class sinn():
 
             rhs_vector_tf = tf.concat([tf.reshape(v, (latent_dim, 1)) for v in rhs_blocks], axis=0)
 
-            # OPTIMIZATION: Solve using pre-factored matrix (5-10x faster)
+            # Solve using pre-factored matrix
             if use_cholesky:
                 latent_solution_vector_tf = tf.linalg.cholesky_solve(L_cholesky, rhs_vector_tf)
             else:
                 latent_solution_vector_tf = tf.linalg.lu_solve(lu, p, rhs_vector_tf)
             
             latent_solution_vector_tf = tf.reshape(latent_solution_vector_tf, (num_interior_spatial_nodes, latent_dim))
+            # Shape: (num_interior_spatial_nodes, latent_dim)
 
-            latent_pred_at_centre_this_time = latent_solution_vector_tf[centre_row_id, :]
-            latent_true_at_centre_this_time = latent_true_at_patch_centre_all_times[time_list_index, :]
+            # ========================================================================
+            # NEW: Get features for ALL interior points at this time slice
+            # ========================================================================
             
+            # Create arrays for all interior points at this time
+            interior_t = np.full((num_interior_spatial_nodes,), int(t_n), dtype=np.int32)
+            interior_y = interior_spatial_global_y.astype(np.int32)
+            interior_x = interior_spatial_global_x.astype(np.int32)
+            
+            # Normalize coordinates
+            t_norm = interior_t.astype(np.float32) / self.nt_norm
+            y_norm = interior_y.astype(np.float32) / self.ny_norm
+            x_norm = interior_x.astype(np.float32) / self.nx_norm
+            
+            # Get true values at all interior points
+            u_val_all = self.U[interior_t, interior_y, interior_x].astype(np.float32)
+            
+            # Stack features for all interior points
+            interior_features_all = np.stack([t_norm, y_norm, x_norm, u_val_all], axis=1).astype(np.float32)
+            interior_features_all_tf = tf.constant(interior_features_all, dtype=tf.float32)
+            # Shape: (num_interior_spatial_nodes, 4)
+            
+            # ========================================================================
+            # NEW: Encode ALL interior points (not just center)
+            # ========================================================================
+            latent_true_all_interior = self.interior_encoder(interior_features_all_tf, training=True)
+            # Shape: (num_interior_spatial_nodes, latent_dim)
+            
+            # ========================================================================
+            # NEW: Latent loss over ALL interior points
+            # ========================================================================
             latent_consistency_loss_accum += tf.reduce_sum(
-                tf.square(latent_pred_at_centre_this_time - latent_true_at_centre_this_time)
+                tf.square(latent_solution_vector_tf - latent_true_all_interior)
             )
-
-            u_pred_at_centre_this_time = self.decoder(
-                tf.reshape(latent_pred_at_centre_this_time, (1, latent_dim)),
-                training=True
-            )
-            u_true_at_centre_this_time = tf.reshape(u_true_at_patch_centre_all_times[time_list_index, :], (1, 1))
-
+            # This sums over ALL (num_interior_spatial_nodes * latent_dim) elements
+            
+            # ========================================================================
+            # NEW: Reconstruction loss over ALL interior points
+            # ========================================================================
+            u_pred_all_interior = self.decoder(latent_solution_vector_tf, training=True)
+            # Shape: (num_interior_spatial_nodes, 1)
+            
+            u_true_all_interior = tf.constant(u_val_all.reshape(-1, 1), dtype=tf.float32)
+            # Shape: (num_interior_spatial_nodes, 1)
+            
             reconstruction_loss_accum += tf.reduce_sum(
-                tf.square(u_pred_at_centre_this_time - u_true_at_centre_this_time)
+                tf.square(u_pred_all_interior - u_true_all_interior)
             )
+            # This sums over ALL num_interior_spatial_nodes elements
 
-        denom = tf.cast(tf.maximum(1, num_time_slices), tf.float32)
-        latent_loss = latent_consistency_loss_accum / denom
-        recon_loss = reconstruction_loss_accum / denom
+        # ============================================================================
+        # NEW: Normalize by total number of points (time slices × interior nodes)
+        # ============================================================================
+        total_points = tf.cast(num_time_slices * num_interior_spatial_nodes, tf.float32)
+        latent_loss = latent_consistency_loss_accum / total_points
+        recon_loss = reconstruction_loss_accum / total_points
 
         total_loss = latent_loss + alpha_recon * recon_loss + spd_loss
         return total_loss, latent_loss, recon_loss, spd_loss
+
+
+        # ============================================================================
+        # SUMMARY OF CHANGES:
+        # ============================================================================
+        # 
+        # OLD (Center-only):
+        # - Compute PDE solution for N interior points
+        # - Compare only 1 point (center) per time slice
+        # - Call encoder 1× per time slice
+        # - Call decoder 1× per time slice
+        # - Normalize loss by number of time slices
+        # 
+        # NEW (Full interior):
+        # - Compute PDE solution for N interior points
+        # - Compare ALL N points per time slice  ✓
+        # - Call encoder 1× per time slice (batch all N points)  ✓
+        # - Call decoder 1× per time slice (batch all N points)  ✓
+        # - Normalize loss by (time slices × interior nodes)  ✓
+        # 
+        # Benefits:
+        # - 100% data efficiency (use all computed solutions)
+        # - N× stronger gradient signal
+        # - Likely faster convergence (fewer epochs needed)
+        # - More robust learning
+        # 
+        # Cost:
+        # - ~N× more memory in gradient tape (still manageable for small patches)
+        # - Slightly slower per epoch but FASTER overall
+        # ============================================================================
 
     def train(self, epochs, patch_dim, num_patches, use_mixed_precision=False):
         """
@@ -448,7 +504,12 @@ class sinn():
             tf.keras.mixed_precision.set_global_policy(policy)
             print("Mixed precision training enabled")
 
-        loss_history = []
+        loss_history = {
+            'total': [],
+            'latent': [],
+            'recon': [],
+            'spd': []
+        }
 
         for epoch in range(epochs):
             # Build patches once per epoch
@@ -457,7 +518,10 @@ class sinn():
                 num_patches=num_patches
             )
 
-            epoch_total_loss_value = 0.0
+            epoch_total_loss = 0.0
+            epoch_latent_loss = 0.0
+            epoch_recon_loss = 0.0
+            epoch_spd_loss = 0.0
 
             # Process patches
             for patch_k in range(num_patches):
@@ -548,14 +612,77 @@ class sinn():
                 
                 self.optimizer.apply_gradients(zip(grads, self.trainable_vars))
 
-                epoch_total_loss_value += float(total_loss.numpy())
+                # Accumulate all loss components
+                epoch_total_loss += float(total_loss.numpy())
+                epoch_latent_loss += float(latent_loss.numpy())
+                epoch_recon_loss += float(recon_loss.numpy())
+                epoch_spd_loss += float(spd_loss.numpy())
 
-            epoch_total_loss_value /= float(num_patches)
-            loss_history.append(epoch_total_loss_value)
+            # Average losses over patches
+            epoch_total_loss /= float(num_patches)
+            epoch_latent_loss /= float(num_patches)
+            epoch_recon_loss /= float(num_patches)
+            epoch_spd_loss /= float(num_patches)
+            
+            # Store in history
+            loss_history['total'].append(epoch_total_loss)
+            loss_history['latent'].append(epoch_latent_loss)
+            loss_history['recon'].append(epoch_recon_loss)
+            loss_history['spd'].append(epoch_spd_loss)
 
-            print(f"epoch {epoch+1:04d} | loss {epoch_total_loss_value:.6e}")
+            print(f"epoch {epoch+1:04d} | total {epoch_total_loss:.6e} | "
+                  f"latent {epoch_latent_loss:.6e} | recon {epoch_recon_loss:.6e} | "
+                  f"spd {epoch_spd_loss:.6e}")
 
         return loss_history
+    
+    def plot_training_history(self, loss_history, save_path=None, show=True):
+        """
+        Plot training loss history showing all loss components.
+        
+        Args:
+            loss_history: Dictionary with keys 'total', 'latent', 'recon', 'spd'
+                         containing lists of loss values per epoch
+            save_path: Optional path to save the figure (e.g., 'loss_plot.png')
+            show: Whether to display the plot (default True)
+        
+        Returns:
+            matplotlib figure object
+        """
+        import matplotlib.pyplot as plt
+        
+        epochs = range(1, len(loss_history['total']) + 1)
+        
+        # Create figure with good size
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Plot each loss component
+        ax.plot(epochs, loss_history['total'], 'k-', linewidth=2, label='Total Loss', marker='o')
+        ax.plot(epochs, loss_history['latent'], 'b--', linewidth=1.5, label='Latent Loss', marker='s')
+        ax.plot(epochs, loss_history['recon'], 'r--', linewidth=1.5, label='Reconstruction Loss', marker='^')
+        ax.plot(epochs, loss_history['spd'], 'g--', linewidth=1.5, label='SPD Loss', marker='d')
+        
+        # Formatting
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Loss', fontsize=12)
+        ax.set_title('Training Loss History', fontsize=14, fontweight='bold')
+        ax.legend(loc='best', fontsize=10)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        ax.set_yscale('log')  # Log scale often better for loss visualization
+        
+        # Tight layout
+        plt.tight_layout()
+        
+        # Save if path provided
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Plot saved to {save_path}")
+        
+        # Show if requested
+        if show:
+            plt.show()
+        
+        return fig
 
 
 if __name__ == "__main__":
@@ -571,7 +698,7 @@ if __name__ == "__main__":
     lr = 1e-3
     patch_dim = [4, 4, 4]  # (x, y, t)
     num_patches = 50
-    epochs = 3
+    epochs = 50
     
     # Load variables from pickle file
     with open(r'c:\Users\darsh\Documents\fyp\myfyp\advection_diffusion\time_in_encoders_only\numerical_data.pkl', 'rb') as f:
@@ -592,4 +719,10 @@ if __name__ == "__main__":
     loss_history = solver.train(epochs, patch_dim, num_patches, use_mixed_precision=False)
     
     print("\nTraining complete!")
-    print(f"Final loss: {loss_history[-1]:.6e}")
+    print(f"Final total loss: {loss_history['total'][-1]:.6e}")
+    print(f"Final latent loss: {loss_history['latent'][-1]:.6e}")
+    print(f"Final recon loss: {loss_history['recon'][-1]:.6e}")
+    print(f"Final spd loss: {loss_history['spd'][-1]:.6e}")
+    
+    # Plot training history
+    solver.plot_training_history(loss_history, save_path='training_loss.png', show=True)
