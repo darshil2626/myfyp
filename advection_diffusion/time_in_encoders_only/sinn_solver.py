@@ -683,6 +683,348 @@ class sinn():
             plt.show()
         
         return fig
+        
+    # FIXED reconstruct_field_at_timestep method
+    # The issue: self.mask_boundary[0, :, :] is marking ALL points as boundary
+    # Fix: Use proper spatial interior mask that doesn't include time boundaries
+
+    def reconstruct_field_at_timestep(self, t_index):
+        """
+        Reconstruct the entire field at a given timestep using the trained model.
+        
+        FIXED: Properly handles spatial vs temporal boundaries
+        """
+        import scipy.sparse as sp
+        from scipy.sparse.linalg import spsolve
+        
+        t = int(t_index)
+        
+        print(f"\nReconstructing field at timestep t={t}...")
+        
+        # ========================================================================
+        # FIX: Build spatial boundary mask correctly
+        # The issue: self.mask_boundary includes temporal boundaries (t=0, t=T)
+        # We only want SPATIAL boundaries for a single time slice
+        # ========================================================================
+        
+        # Get the spatial boundary thickness from split_interior_boundary
+        # Default is typically b_thick = 1
+        b_thick = 1  # Assuming this was your setting
+        
+        # Build spatial interior mask (2D - no time dimension)
+        spatial_interior_mask = np.zeros((self.ny, self.nx), dtype=bool)
+        spatial_interior_mask[b_thick:-b_thick, b_thick:-b_thick] = True
+        
+        spatial_boundary_mask = ~spatial_interior_mask
+        
+        print(f"  DEBUG: Grid shape: ({self.ny}, {self.nx})")
+        print(f"  DEBUG: Boundary thickness: {b_thick}")
+        print(f"  DEBUG: mask_boundary shape: {self.mask_boundary.shape}")
+        print(f"  DEBUG: mask_boundary[{t}] has {np.sum(self.mask_boundary[t])} boundary points")
+        
+        # Get interior and boundary indices
+        interior_indices = np.argwhere(spatial_interior_mask)  # (N_interior, 2)
+        boundary_indices = np.argwhere(spatial_boundary_mask)  # (N_boundary, 2)
+        
+        num_interior = interior_indices.shape[0]
+        num_boundary = boundary_indices.shape[0]
+        
+        print(f"  Interior points: {num_interior}")
+        print(f"  Boundary points: {num_boundary}")
+        
+        if num_interior == 0:
+            raise ValueError(f"No interior points! Check your boundary thickness (b_thick={b_thick}). "
+                            f"Grid size is ({self.ny}, {self.nx}), which may be too small for b_thick={b_thick}")
+        
+        # ========================================================================
+        # STEP 1: Encode boundary conditions
+        # ========================================================================
+        print("  Step 1: Encoding boundary conditions...")
+        
+        # Get boundary features
+        boundary_y = boundary_indices[:, 0]
+        boundary_x = boundary_indices[:, 1]
+        boundary_t = np.full(num_boundary, t, dtype=np.int32)
+        
+        t_norm = boundary_t.astype(np.float32) / self.nt_norm
+        y_norm = boundary_y.astype(np.float32) / self.ny_norm
+        x_norm = boundary_x.astype(np.float32) / self.nx_norm
+        u_boundary = self.U[boundary_t, boundary_y, boundary_x].astype(np.float32)
+        
+        boundary_features = np.stack([t_norm, y_norm, x_norm, u_boundary], axis=1)
+        boundary_features_tf = tf.constant(boundary_features, dtype=tf.float32)
+        
+        # Encode boundary
+        boundary_latents = self.boundary_encoder(boundary_features_tf, training=False)
+        boundary_latents_np = boundary_latents.numpy()  # (N_boundary, latent_dim)
+        
+        latent_dim = boundary_latents_np.shape[1]
+        print(f"  Latent dimension: {latent_dim}")
+        
+        # ========================================================================
+        # STEP 2: Build spatial Laplacian operator
+        # ========================================================================
+        print("  Step 2: Building Laplacian operator...")
+        
+        # Create mapping from (y,x) to row index
+        interior_row_map = -np.ones((self.ny, self.nx), dtype=np.int32)
+        for row_id, (y, x) in enumerate(interior_indices):
+            interior_row_map[y, x] = row_id
+        
+        # Build sparse Laplacian matrix
+        row_indices = []
+        col_indices = []
+        values = []
+        
+        neighbour_steps = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # up, down, left, right
+        
+        # Track which interior nodes have boundary neighbors
+        boundary_contributions = [[] for _ in range(num_interior)]
+        
+        for row_id, (y, x) in enumerate(interior_indices):
+            # Diagonal (self)
+            row_indices.append(row_id)
+            col_indices.append(row_id)
+            values.append(4.0)
+            
+            # Neighbors
+            for dy, dx in neighbour_steps:
+                ny, nx = y + dy, x + dx
+                
+                if 0 <= ny < self.ny and 0 <= nx < self.nx:
+                    neighbour_row = interior_row_map[ny, nx]
+                    
+                    if neighbour_row >= 0:
+                        # Interior neighbor
+                        row_indices.append(row_id)
+                        col_indices.append(neighbour_row)
+                        values.append(-1.0)
+                    else:
+                        # Boundary neighbor - store for RHS
+                        # Find index in boundary_indices
+                        boundary_idx = np.where((boundary_indices[:, 0] == ny) & 
+                                            (boundary_indices[:, 1] == nx))[0]
+                        if len(boundary_idx) > 0:
+                            boundary_contributions[row_id].append(int(boundary_idx[0]))
+        
+        # Create sparse Laplacian
+        laplacian_sparse = sp.csr_matrix(
+            (values, (row_indices, col_indices)),
+            shape=(num_interior, num_interior)
+        )
+        
+        # ========================================================================
+        # STEP 3: Get A matrix (PDE operator in latent space)
+        # ========================================================================
+        print("  Step 3: Getting PDE operator (A matrix)...")
+        
+        A_matrix = 0.5 * (self.a_matrix + tf.transpose(self.a_matrix))
+        A_matrix_np = A_matrix.numpy()  # (latent_dim, latent_dim)
+        
+        # Build stiffness matrix: K = Laplacian ⊗ A
+        stiffness = sp.kron(laplacian_sparse, A_matrix_np, format='csr')
+        
+        print(f"  Stiffness matrix size: {stiffness.shape}")
+        
+        # ========================================================================
+        # STEP 4: Build RHS from boundary conditions
+        # ========================================================================
+        print("  Step 4: Building right-hand side...")
+        
+        # RHS is -Laplacian @ boundary contributions
+        rhs = np.zeros((num_interior, latent_dim), dtype=np.float32)
+        
+        for row_id in range(num_interior):
+            for boundary_idx in boundary_contributions[row_id]:
+                # Contribution from this boundary node
+                rhs[row_id, :] += A_matrix_np @ boundary_latents_np[boundary_idx, :]
+        
+        rhs_flat = rhs.flatten()
+        
+        # ========================================================================
+        # STEP 5: Solve linear system K @ latent_interior = rhs
+        # ========================================================================
+        print("  Step 5: Solving linear system...")
+        
+        latent_interior_flat = spsolve(stiffness, rhs_flat)
+        latent_interior = latent_interior_flat.reshape((num_interior, latent_dim))
+        latent_interior_tf = tf.constant(latent_interior, dtype=tf.float32)
+        
+        # ========================================================================
+        # STEP 6: Decode latents to get interior field
+        # ========================================================================
+        print("  Step 6: Decoding latents to physical field...")
+        
+        u_interior_pred = self.decoder(latent_interior_tf, training=False)
+        u_interior_pred_np = u_interior_pred.numpy().flatten()
+        
+        # ========================================================================
+        # STEP 7: Assemble full field
+        # ========================================================================
+        print("  Step 7: Assembling full field...")
+        
+        # Initialize
+        u_pred_full = np.zeros((self.ny, self.nx), dtype=np.float32)
+        u_true_full = self.U[t, :, :].astype(np.float32)
+        
+        # Fill boundary values
+        u_pred_full[boundary_y, boundary_x] = u_boundary
+        
+        # Fill interior values
+        interior_y = interior_indices[:, 0]
+        interior_x = interior_indices[:, 1]
+        u_pred_full[interior_y, interior_x] = u_interior_pred_np
+        
+        # Compute error
+        u_error = np.abs(u_pred_full - u_true_full)
+        
+        # Compute statistics (interior only)
+        interior_error = u_error[interior_y, interior_x]
+        mse = np.mean(interior_error ** 2)
+        mae = np.mean(interior_error)
+        max_error = np.max(interior_error)
+        
+        print(f"\n  Reconstruction Statistics (interior only):")
+        print(f"    MSE: {mse:.6e}")
+        print(f"    MAE: {mae:.6e}")
+        print(f"    Max Error: {max_error:.6e}")
+        
+        results = {
+            'u_pred': u_pred_full,
+            'u_true': u_true_full,
+            'u_error': u_error,
+            'boundary_mask': spatial_boundary_mask,
+            'interior_mask': spatial_interior_mask,
+            'mse': mse,
+            'mae': mae,
+            'max_error': max_error,
+            't_index': t
+        }
+        
+        print(f"  Reconstruction complete!\n")
+        
+        return results
+    
+    def plot_field_reconstruction(self, results, save_path=None, show=True):
+        """
+        Plot original field, predicted field, and error field side-by-side.
+        
+        Args:
+            results: Dictionary returned from reconstruct_field_at_timestep()
+            save_path: Optional path to save the figure
+            show: Whether to display the plot
+        """
+        import matplotlib.pyplot as plt
+        from matplotlib import cm
+        
+        u_true = results['u_true']
+        u_pred = results['u_pred']
+        u_error = results['u_error']
+        boundary_mask = results['boundary_mask']
+        t_index = results['t_index']
+        
+        # Create figure with 3 subplots
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        
+        # Determine common color scale for true and predicted
+        vmin = min(u_true.min(), u_pred.min())
+        vmax = max(u_true.max(), u_pred.max())
+        
+        # ========================================================================
+        # Plot 1: True field
+        # ========================================================================
+        ax = axes[0]
+        im1 = ax.imshow(u_true, cmap='viridis', origin='lower', 
+                        vmin=vmin, vmax=vmax, aspect='auto')
+        ax.set_title(f'True Field (t={t_index})', fontsize=13, fontweight='bold')
+        ax.set_xlabel('x', fontsize=11)
+        ax.set_ylabel('y', fontsize=11)
+        
+        # Mark boundary
+        boundary_coords = np.argwhere(boundary_mask)
+        ax.scatter(boundary_coords[:, 1], boundary_coords[:, 0], 
+                c='red', s=1, alpha=0.3, label='Boundary')
+        
+        cbar1 = plt.colorbar(im1, ax=ax)
+        cbar1.set_label('u', fontsize=11)
+        
+        # ========================================================================
+        # Plot 2: Predicted field
+        # ========================================================================
+        ax = axes[1]
+        im2 = ax.imshow(u_pred, cmap='viridis', origin='lower',
+                        vmin=vmin, vmax=vmax, aspect='auto')
+        ax.set_title(f'Predicted Field (Reconstructed)', fontsize=13, fontweight='bold')
+        ax.set_xlabel('x', fontsize=11)
+        ax.set_ylabel('y', fontsize=11)
+        
+        # Mark boundary
+        ax.scatter(boundary_coords[:, 1], boundary_coords[:, 0], 
+                c='red', s=1, alpha=0.3, label='Boundary')
+        
+        cbar2 = plt.colorbar(im2, ax=ax)
+        cbar2.set_label('u', fontsize=11)
+        
+        # ========================================================================
+        # Plot 3: Error field
+        # ========================================================================
+        ax = axes[2]
+        im3 = ax.imshow(u_error, cmap='hot', origin='lower', aspect='auto')
+        ax.set_title(f'Absolute Error', fontsize=13, fontweight='bold')
+        ax.set_xlabel('x', fontsize=11)
+        ax.set_ylabel('y', fontsize=11)
+        
+        # Mark boundary
+        ax.scatter(boundary_coords[:, 1], boundary_coords[:, 0], 
+                c='cyan', s=1, alpha=0.5, label='Boundary')
+        
+        cbar3 = plt.colorbar(im3, ax=ax)
+        cbar3.set_label('|error|', fontsize=11)
+        
+        # Add error statistics
+        ax.text(0.02, 0.98, 
+                f"MSE: {results['mse']:.4e}\nMAE: {results['mae']:.4e}\nMax: {results['max_error']:.4e}",
+                transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        # ========================================================================
+        # Overall title
+        # ========================================================================
+        plt.suptitle(f'Field Reconstruction at t={t_index}', 
+                    fontsize=15, fontweight='bold', y=1.02)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Field reconstruction plot saved to {save_path}")
+        
+        if show:
+            plt.show()
+        
+        return fig
+
+
+        # ============================================================================
+        # EXAMPLE USAGE
+        # ============================================================================
+        """
+        # After training is complete:
+
+        # Reconstruct field at timestep 50
+        results = solver.reconstruct_field_at_timestep(t_index=50)
+
+        # Plot the reconstruction
+        solver.plot_field_reconstruction(results, 
+                                        save_path='field_reconstruction_t50.png',
+                                        show=True)
+
+        # Access the results
+        print(f"Prediction MSE: {results['mse']:.6e}")
+        u_pred = results['u_pred']  # Predicted field (ny, nx)
+        u_true = results['u_true']  # True field (ny, nx)
+        u_error = results['u_error']  # Error field (ny, nx)
+        """
 
 
 if __name__ == "__main__":
@@ -690,14 +1032,14 @@ if __name__ == "__main__":
     b_thick = 1
     include_t0 = True
     include_tT = True
-    num_latentdim = 3
-    num_units = 64
+    num_latentdim = 10
+    num_units = 128
     num_layers = 3
     dropout = 0.0
     l2_reg = 1e-5
     lr = 1e-3
-    patch_dim = [4, 4, 4]  # (x, y, t)
-    num_patches = 50
+    patch_dim = [10, 10, 10]  # (x, y, t)
+    num_patches = 100
     epochs = 50
     
     # Load variables from pickle file
@@ -715,6 +1057,16 @@ if __name__ == "__main__":
     solver.split_interior_boundary(b_thick, include_t0, include_tT)
     solver.build_models(num_latentdim, num_units, num_layers, dropout, l2_reg, lr)
     
+    # After solver.build_models(...)
+    print("\nBOUNDARY MASK CHECK:")
+    print(f"Grid shape: {solver.U.shape}")
+    print(f"Boundary mask shape: {solver.mask_boundary.shape}")
+
+    t_mid = solver.nt // 2
+    print(f"At t={t_mid}:")
+    print(f"  Boundary points: {np.sum(solver.mask_boundary[t_mid])}")
+    print(f"  Interior points: {np.sum(~solver.mask_boundary[t_mid])}")
+    
     # Train with optional mixed precision (set to True for better GPU performance)
     loss_history = solver.train(epochs, patch_dim, num_patches, use_mixed_precision=False)
     
@@ -726,3 +1078,14 @@ if __name__ == "__main__":
     
     # Plot training history
     solver.plot_training_history(loss_history, save_path='training_loss.png', show=True)
+    
+    # Reconstruct field at timestep 50
+    results = solver.reconstruct_field_at_timestep(t_index=50)
+
+    # Visualize
+    solver.plot_field_reconstruction(results, 
+                                    save_path='field_t50.png',
+                                    show=True)
+
+    # Check quality
+    print(f"Reconstruction MAE: {results['mae']:.6e}")
