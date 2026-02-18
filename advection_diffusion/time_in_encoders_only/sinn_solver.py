@@ -22,6 +22,7 @@ class sinn:
         self.X = np.asarray(X)
         self.Y = np.asarray(Y)
         self.U = np.asarray(U)
+        self.U_original = self.U.copy()  # Store original before any standardisation
         self.T = np.asarray(T)
         self.nt, self.ny, self.nx = self.U.shape
 
@@ -122,19 +123,19 @@ class sinn:
             name="decoder", dropout=dropout, l2_reg=l2_reg
         )
 
-        # PDE operator in latent space (learned)
-        self.a_matrix = tf.Variable(
-            np.eye(self.num_latentdim, dtype=np.float32),
-            trainable=True,
-            dtype=tf.float32,
-            name="pde_operator",
-        )
+        # ---- SPD latent operator via Cholesky: A = L L^T ----
+        self._chol_eps = tf.constant(1e-6, dtype=tf.float32)  # numerical safety
+
+        # Unconstrained parameter (we'll take its lower triangle as L_raw)
+        # Start near identity by setting B ~ I.
+        init_B = np.eye(self.num_latentdim, dtype=np.float32)
+        self.a_chol_raw = tf.Variable(init_B, trainable=True, dtype=tf.float32, name="a_chol_raw")
 
         self.trainable_vars = (
             self.interior_encoder.trainable_variables
             + self.boundary_encoder.trainable_variables
             + self.decoder.trainable_variables
-            + [self.a_matrix]
+            + [self.a_chol_raw]
         )
 
         print(f"Trainable variables: {len(self.trainable_vars)}")
@@ -143,10 +144,97 @@ class sinn:
     # -----------------------------
     # Patch sampling (indices only)
     # -----------------------------
-    def create_patch_centres_and_indices_and_values_and_boundary_splits(self, patch_dim, num_patches):
-        """
-        Create random spatio-temporal patches and store indices needed for training.
+    # def create_patch_centres_and_indices_and_values_and_boundary_splits(self, patch_dim, num_patches):
+    #     """
+    #     Create random spatio-temporal patches and store indices needed for training.
 
+    #     - Stores indices only (no values).
+    #     - Patch boundary is the outer shell of the cuboid (including t-faces).
+    #     - Patch interior are points strictly inside that shell.
+    #     """
+    #     px, py, pt = int(patch_dim[0]), int(patch_dim[1]), int(patch_dim[2])
+
+    #     # Offsets that keep the patch in-bounds.
+    #     x_left, x_right = px // 2, (px - 1) // 2
+    #     y_left, y_right = py // 2, (py - 1) // 2
+    #     t_left, t_right = pt // 2, (pt - 1) // 2
+
+    #     x_min, x_max = x_left, self.nx - x_right - 1
+    #     y_min, y_max = y_left, self.ny - y_right - 1
+    #     t_min, t_max = t_left, self.nt - t_right - 1
+
+    #     if x_min > x_max or y_min > y_max or t_min > t_max:
+    #         raise ValueError("Patch dimensions are too large for the grid.")
+
+    #     # Centres
+    #     self.patch_center_idx = np.zeros((num_patches, 3), dtype=np.int32)
+
+    #     # Variable-length arrays per patch (indices only)
+    #     self.patch_interior_idx = np.empty(num_patches, dtype=object)
+    #     self.patch_boundary_idx = np.empty(num_patches, dtype=object)
+    #     self.patch_boundary_global_boundary_idx = np.empty(num_patches, dtype=object)
+    #     self.patch_boundary_global_interior_idx = np.empty(num_patches, dtype=object)
+
+    #     # Local boundary mask for a (pt, py, px) cuboid
+    #     patch_boundary_mask_local = np.zeros((pt, py, px), dtype=bool)
+    #     patch_boundary_mask_local[0, :, :] = True
+    #     patch_boundary_mask_local[-1, :, :] = True
+    #     patch_boundary_mask_local[:, 0, :] = True
+    #     patch_boundary_mask_local[:, -1, :] = True
+    #     patch_boundary_mask_local[:, :, 0] = True
+    #     patch_boundary_mask_local[:, :, -1] = True
+    #     patch_interior_mask_local = ~patch_boundary_mask_local
+
+    #     # Local offsets relative to centre
+    #     t_offsets = np.arange(-t_left, t_right + 1, dtype=np.int32)
+    #     y_offsets = np.arange(-y_left, y_right + 1, dtype=np.int32)
+    #     x_offsets = np.arange(-x_left, x_right + 1, dtype=np.int32)
+    #     TT, YY, XX = np.meshgrid(t_offsets, y_offsets, x_offsets, indexing="ij")
+
+    #     local_offsets_flat = np.stack([TT.ravel(), YY.ravel(), XX.ravel()], axis=1)  # (pt*py*px, 3)
+    #     boundary_mask_flat = patch_boundary_mask_local.ravel()
+    #     interior_mask_flat = patch_interior_mask_local.ravel()
+
+    #     rng = np.random.default_rng()
+
+    #     for k in range(num_patches):
+    #         ct = rng.integers(t_min, t_max + 1)
+    #         cy = rng.integers(y_min, y_max + 1)
+    #         cx = rng.integers(x_min, x_max + 1)
+    #         self.patch_center_idx[k] = (ct, cy, cx)
+
+    #         # Absolute indices for all points in the cuboid
+    #         abs_t = ct + local_offsets_flat[:, 0]
+    #         abs_y = cy + local_offsets_flat[:, 1]
+    #         abs_x = cx + local_offsets_flat[:, 2]
+    #         idx_all = np.stack([abs_t, abs_y, abs_x], axis=1).astype(np.int32)
+
+    #         patch_boundary_idx = idx_all[boundary_mask_flat]
+    #         patch_interior_idx = idx_all[interior_mask_flat]
+
+    #         self.patch_boundary_idx[k] = patch_boundary_idx
+    #         self.patch_interior_idx[k] = patch_interior_idx
+
+    #         # Split patch boundary by *global* boundary membership
+    #         if getattr(self, "mask_boundary", None) is not None:
+    #             is_global_boundary = self.mask_boundary[
+    #                 patch_boundary_idx[:, 0], patch_boundary_idx[:, 1], patch_boundary_idx[:, 2]
+    #             ]
+    #         else:
+    #             is_global_boundary = np.zeros((patch_boundary_idx.shape[0],), dtype=bool)
+
+    #         self.patch_boundary_global_boundary_idx[k] = patch_boundary_idx[is_global_boundary]
+    #         self.patch_boundary_global_interior_idx[k] = patch_boundary_idx[~is_global_boundary]
+    
+    def create_patch_centres_and_indices_and_values_and_boundary_splits(self, patch_dim, num_patches, boundary_fraction=0.8):
+        """
+        Create spatio-temporal patches with bias toward global boundaries.
+        
+        Args:
+            patch_dim: [px, py, pt] - patch dimensions
+            num_patches: Total number of patches to create
+            boundary_fraction: Fraction of patches guaranteed to touch global boundary (default: 0.6)
+        
         - Stores indices only (no values).
         - Patch boundary is the outer shell of the cuboid (including t-faces).
         - Patch interior are points strictly inside that shell.
@@ -164,6 +252,10 @@ class sinn:
 
         if x_min > x_max or y_min > y_max or t_min > t_max:
             raise ValueError("Patch dimensions are too large for the grid.")
+
+        # Split patches into boundary-touching and interior
+        num_boundary_patches = int(num_patches * boundary_fraction)
+        num_interior_patches = num_patches - num_boundary_patches
 
         # Centres
         self.patch_center_idx = np.zeros((num_patches, 3), dtype=np.int32)
@@ -190,40 +282,95 @@ class sinn:
         x_offsets = np.arange(-x_left, x_right + 1, dtype=np.int32)
         TT, YY, XX = np.meshgrid(t_offsets, y_offsets, x_offsets, indexing="ij")
 
-        local_offsets_flat = np.stack([TT.ravel(), YY.ravel(), XX.ravel()], axis=1)  # (pt*py*px, 3)
-        boundary_mask_flat = patch_boundary_mask_local.ravel()
-        interior_mask_flat = patch_interior_mask_local.ravel()
+        offsets = np.stack([TT.ravel(), YY.ravel(), XX.ravel()], axis=1)
+        boundary_offsets = offsets[patch_boundary_mask_local.ravel()]
+        interior_offsets = offsets[patch_interior_mask_local.ravel()]
 
-        rng = np.random.default_rng()
+        # Sample boundary-touching patches
+        for p in range(num_boundary_patches):
+            # Randomly choose which face(s) to touch
+            face = np.random.choice(['t0', 'tT', 'x_left', 'x_right', 'y_bottom', 'y_top'])
+            
+            if face == 't0':
+                # Touch t=0 face
+                t_c = t_left
+                y_c = np.random.randint(y_min, y_max + 1)
+                x_c = np.random.randint(x_min, x_max + 1)
+            elif face == 'tT':
+                # Touch t=T face
+                t_c = self.nt - t_right - 1
+                y_c = np.random.randint(y_min, y_max + 1)
+                x_c = np.random.randint(x_min, x_max + 1)
+            elif face == 'x_left':
+                # Touch left spatial boundary
+                x_c = x_left
+                y_c = np.random.randint(y_min, y_max + 1)
+                t_c = np.random.randint(t_min, t_max + 1)
+            elif face == 'x_right':
+                # Touch right spatial boundary
+                x_c = self.nx - x_right - 1
+                y_c = np.random.randint(y_min, y_max + 1)
+                t_c = np.random.randint(t_min, t_max + 1)
+            elif face == 'y_bottom':
+                # Touch bottom spatial boundary
+                y_c = y_left
+                x_c = np.random.randint(x_min, x_max + 1)
+                t_c = np.random.randint(t_min, t_max + 1)
+            else:  # y_top
+                # Touch top spatial boundary
+                y_c = self.ny - y_right - 1
+                x_c = np.random.randint(x_min, x_max + 1)
+                t_c = np.random.randint(t_min, t_max + 1)
 
-        for k in range(num_patches):
-            ct = rng.integers(t_min, t_max + 1)
-            cy = rng.integers(y_min, y_max + 1)
-            cx = rng.integers(x_min, x_max + 1)
-            self.patch_center_idx[k] = (ct, cy, cx)
+            self.patch_center_idx[p, :] = [t_c, y_c, x_c]
 
-            # Absolute indices for all points in the cuboid
-            abs_t = ct + local_offsets_flat[:, 0]
-            abs_y = cy + local_offsets_flat[:, 1]
-            abs_x = cx + local_offsets_flat[:, 2]
-            idx_all = np.stack([abs_t, abs_y, abs_x], axis=1).astype(np.int32)
+            # Global indices for patch boundary and interior
+            patch_bnd_global = np.array([t_c, y_c, x_c], dtype=np.int32) + boundary_offsets
+            patch_int_global = np.array([t_c, y_c, x_c], dtype=np.int32) + interior_offsets
 
-            patch_boundary_idx = idx_all[boundary_mask_flat]
-            patch_interior_idx = idx_all[interior_mask_flat]
+            # Split patch boundary into global boundary and global interior
+            is_global_boundary = self.mask_boundary[
+                patch_bnd_global[:, 0], patch_bnd_global[:, 1], patch_bnd_global[:, 2]
+            ]
 
-            self.patch_boundary_idx[k] = patch_boundary_idx
-            self.patch_interior_idx[k] = patch_interior_idx
+            patch_bnd_on_glob_bnd = patch_bnd_global[is_global_boundary]
+            patch_bnd_on_glob_int = patch_bnd_global[~is_global_boundary]
 
-            # Split patch boundary by *global* boundary membership
-            if getattr(self, "mask_boundary", None) is not None:
-                is_global_boundary = self.mask_boundary[
-                    patch_boundary_idx[:, 0], patch_boundary_idx[:, 1], patch_boundary_idx[:, 2]
-                ]
-            else:
-                is_global_boundary = np.zeros((patch_boundary_idx.shape[0],), dtype=bool)
+            self.patch_interior_idx[p] = patch_int_global
+            self.patch_boundary_idx[p] = patch_bnd_global
+            self.patch_boundary_global_boundary_idx[p] = patch_bnd_on_glob_bnd
+            self.patch_boundary_global_interior_idx[p] = patch_bnd_on_glob_int
 
-            self.patch_boundary_global_boundary_idx[k] = patch_boundary_idx[is_global_boundary]
-            self.patch_boundary_global_interior_idx[k] = patch_boundary_idx[~is_global_boundary]
+        # Sample remaining interior patches randomly
+        for p in range(num_boundary_patches, num_patches):
+            t_c = np.random.randint(t_min, t_max + 1)
+            y_c = np.random.randint(y_min, y_max + 1)
+            x_c = np.random.randint(x_min, x_max + 1)
+
+            self.patch_center_idx[p, :] = [t_c, y_c, x_c]
+
+            # Global indices for patch boundary and interior
+            patch_bnd_global = np.array([t_c, y_c, x_c], dtype=np.int32) + boundary_offsets
+            patch_int_global = np.array([t_c, y_c, x_c], dtype=np.int32) + interior_offsets
+
+            # Split patch boundary into global boundary and global interior
+            is_global_boundary = self.mask_boundary[
+                patch_bnd_global[:, 0], patch_bnd_global[:, 1], patch_bnd_global[:, 2]
+            ]
+
+            patch_bnd_on_glob_bnd = patch_bnd_global[is_global_boundary]
+            patch_bnd_on_glob_int = patch_bnd_global[~is_global_boundary]
+
+            self.patch_interior_idx[p] = patch_int_global
+            self.patch_boundary_idx[p] = patch_bnd_global
+            self.patch_boundary_global_boundary_idx[p] = patch_bnd_on_glob_bnd
+            self.patch_boundary_global_interior_idx[p] = patch_bnd_on_glob_int
+
+        # Count how many patches actually touch the global boundary
+        num_touching = sum(1 for p in range(num_patches) 
+                        if len(self.patch_boundary_global_boundary_idx[p]) > 0)
+
+        print(f"  - {num_touching} total patches touch global boundary ({100*num_touching/num_patches:.1f}%)")
 
     # -----------------------------
     # Feature stacking
@@ -290,6 +437,26 @@ class sinn:
             out = tf.tensor_scatter_nd_update(out, indices=tf.constant(idx_int)[:, None], updates=lat_int)
 
         return out
+    
+    def get_latent_operator_matrix(self) -> tf.Tensor:
+        """
+        Return SPD latent operator A = L L^T via Cholesky parameterisation.
+
+        L is lower triangular, with positive diagonal enforced by softplus.
+        """
+        B = self.a_chol_raw
+
+        # Lower triangular part
+        L = tf.linalg.band_part(B, -1, 0)
+
+        # Positive diagonal
+        diag = tf.linalg.diag_part(L)
+        diag_pos = tf.nn.softplus(diag) + self._chol_eps
+        L = tf.linalg.set_diag(L, diag_pos)
+
+        A = tf.matmul(L, L, transpose_b=True)
+        return A
+
 
     # -----------------------------
     # PDE loss (full interior)
@@ -301,9 +468,7 @@ class sinn:
         patch_time_indices_in_patch: np.ndarray,
         patch_boundary_idx_tyx: np.ndarray,
         latent_values_on_patch_boundary_aligned_with_patch_boundary_idx: tf.Tensor,
-        rho_spd: float = 1e-3,
         alpha_recon: float = 1.0,
-        spd_epsilon: float = 1e-6,
     ):
         """
         Compute PDE loss with FULL INTERIOR supervision (not just center).
@@ -366,11 +531,10 @@ class sinn:
 
         laplacian_operator_matrix_tf = tf.constant(laplacian_operator_matrix, dtype=tf.float32)
 
-        # A matrix and SPD regularisation
-        latent_operator_matrix = 0.5 * (self.a_matrix + tf.transpose(self.a_matrix))
-        eigenvalues = tf.linalg.eigvalsh(latent_operator_matrix)
-        spd_violation = tf.nn.relu(spd_epsilon - eigenvalues)
-        spd_loss = rho_spd * tf.reduce_sum(spd_violation * spd_violation)
+        # SPD A via Cholesky (no penalty needed)
+        latent_operator_matrix = self.get_latent_operator_matrix()
+        spd_loss = tf.constant(0.0, tf.float32)
+
 
         # Build stiffness matrix ONCE for this patch spatial footprint
         stiffness_matrix_tf = tf.linalg.LinearOperatorKronecker(
@@ -510,13 +674,17 @@ class sinn:
                         patch_time_indices_in_patch=patch_time_indices_in_patch,
                         patch_boundary_idx_tyx=patch_boundary_idx_tyx,
                         latent_values_on_patch_boundary_aligned_with_patch_boundary_idx=latent_on_patch_boundary_aligned,
-                        rho_spd=1e-3,
                         alpha_recon=1.0,
                     )
 
                 grads = tape.gradient(total_loss, self.trainable_vars)
+                pairs = [(g, v) for (g, v) in zip(grads, self.trainable_vars) if g is not None]
+                if not pairs:
+                    continue
+                grads, vars_ = zip(*pairs)
                 grads, _ = tf.clip_by_global_norm(grads, clip_norm)
-                self.optimizer.apply_gradients(zip(grads, self.trainable_vars))
+                self.optimizer.apply_gradients(zip(grads, vars_))
+
 
                 epoch_total_loss += float(total_loss.numpy())
                 epoch_latent_loss += float(latent_loss.numpy())
@@ -582,6 +750,11 @@ class sinn:
         Reconstruct the entire field at a given timestep using the trained model.
 
         Uses a spatial (y,x) elliptic solve in latent space for that timestep.
+        
+        Note: 
+        - Boundary conditions are taken from U_original (raw values), then standardised for encoding
+        - Decoder outputs are in standardised space, so must be unstandardised for comparison
+        - Ground truth comparison uses U_original (raw values)
         """
         import scipy.sparse as sp
         from scipy.sparse.linalg import spsolve
@@ -620,9 +793,14 @@ class sinn:
         t_norm = boundary_t.astype(np.float32) / self.nt_norm
         y_norm = boundary_y.astype(np.float32) / self.ny_norm
         x_norm = boundary_x.astype(np.float32) / self.nx_norm
-        u_boundary = self.U[boundary_t, boundary_y, boundary_x].astype(np.float32)
+        
+        # Get raw boundary values from original data
+        u_boundary_raw = self.U_original[boundary_t, boundary_y, boundary_x].astype(np.float32)
+        
+        # Standardise boundary values for encoding (encoder expects standardised inputs)
+        u_boundary_standardised = (u_boundary_raw - self.U_mean[boundary_y, boundary_x]) / self.U_std[boundary_y, boundary_x]
 
-        boundary_features = np.stack([t_norm, y_norm, x_norm, u_boundary], axis=1).astype(np.float32)
+        boundary_features = np.stack([t_norm, y_norm, x_norm, u_boundary_standardised], axis=1).astype(np.float32)
         boundary_features_tf = tf.constant(boundary_features, dtype=tf.float32)
 
         boundary_latents = self.boundary_encoder(boundary_features_tf, training=False).numpy()
@@ -657,7 +835,7 @@ class sinn:
 
         # Step 3: Get A matrix
         print("  Step 3: Getting PDE operator (A matrix)...")
-        A_matrix_np = (0.5 * (self.a_matrix + tf.transpose(self.a_matrix))).numpy()
+        A_matrix_np = self.get_latent_operator_matrix().numpy()
 
         stiffness = sp.kron(laplacian_sparse, A_matrix_np, format="csr")
         print(f"  Stiffness matrix size: {stiffness.shape}")
@@ -679,16 +857,25 @@ class sinn:
 
         # Step 6: Decode
         print("  Step 6: Decoding latents to physical field...")
-        u_interior_pred = self.decoder(latent_interior_tf, training=False).numpy().reshape(-1)
-
-        # Step 7: Assemble
-        print("  Step 7: Assembling full field...")
-        u_pred_full = np.zeros((self.ny, self.nx), dtype=np.float32)
-        u_true_full = self.U[t, :, :].astype(np.float32)
-
-        u_pred_full[boundary_y, boundary_x] = u_boundary
+        u_interior_pred_standardised = self.decoder(latent_interior_tf, training=False).numpy().reshape(-1)
+        
+        # Step 7: Unstandardise decoder outputs
+        print("  Step 7: Unstandardising predictions...")
         interior_y = interior_indices[:, 0]
         interior_x = interior_indices[:, 1]
+        u_interior_pred = u_interior_pred_standardised * self.U_std[interior_y, interior_x] + self.U_mean[interior_y, interior_x]
+
+        # Step 8: Assemble
+        print("  Step 8: Assembling full field...")
+        u_pred_full = np.zeros((self.ny, self.nx), dtype=np.float32)
+        
+        # Ground truth from original (raw) data
+        u_true_full = self.U_original[t, :, :].astype(np.float32)
+
+        # Fill in boundary values (already in raw scale)
+        u_pred_full[boundary_y, boundary_x] = u_boundary_raw
+        
+        # Fill in interior values (now unstandardised)
         u_pred_full[interior_y, interior_x] = u_interior_pred
 
         u_error = np.abs(u_pred_full - u_true_full)
@@ -784,9 +971,9 @@ if __name__ == "__main__":
     dropout = 0.0
     l2_reg = 1e-5
     lr = 1e-3
-    patch_dim = [10, 10, 10]  # (x, y, t)
+    patch_dim = [10, 10, 10]  # [px, py, pt] - spatial_x, spatial_y, time dimensions
     num_patches = 100
-    epochs = 5
+    epochs = 100
 
     with open(r"c:\Users\darsh\Documents\fyp\myfyp\advection_diffusion\time_in_encoders_only\numerical_data.pkl", "rb") as f:
         data = pickle.load(f)
@@ -797,7 +984,7 @@ if __name__ == "__main__":
     T = data["T"]
 
     solver = sinn(X, Y, U, T, debug=False)
-    solver.standardise_u()
+    solver.standardise_u()  # Now uncommented - CRITICAL for proper training!
     solver.split_interior_boundary(b_thick, include_t0, include_tT)
     solver.build_models(num_latentdim, num_units, num_layers, dropout, l2_reg, lr)
 
@@ -823,3 +1010,9 @@ if __name__ == "__main__":
     results = solver.reconstruct_field_at_timestep(t_index=50)
     solver.plot_field_reconstruction(results, save_path="field_t50.png", show=True)
     print(f"Reconstruction MAE: {results['mae']:.6e}")
+    
+    A_final = solver.get_latent_operator_matrix().numpy()
+    print("A matrix (first 3x3):")
+    print(A_final[:3, :3])
+    print(f"\nFrobenius distance from identity: {np.linalg.norm(A_final - np.eye(solver.num_latentdim)):.4f}")
+    print(f"Eigenvalues: {np.linalg.eigvalsh(A_final)}")
