@@ -429,7 +429,7 @@ if __name__ == "__main__":
     if FIELD_TYPE == "speed":
         vmin_speed = min(np.min(s) for s in U)
         vmax_speed = max(np.max(s) for s in U)
-        fig = create_visualisation(X, Y, U, T, n_indices=12, 
+        fig = create_visualisation(X, Y, U, T, n_indices=8, 
                                    vmin=vmin_speed, vmax=vmax_speed,
                                    title_prefix="Speed Magnitude")
     else:
@@ -437,10 +437,9 @@ if __name__ == "__main__":
         speed_vis = [np.sqrt(u[t, :, :] ** 2 + v[t, :, :] ** 2) for t in range(nt)]
         vmin_speed = min(np.min(s) for s in speed_vis)
         vmax_speed = max(np.max(s) for s in speed_vis)
-        fig = create_visualisation(X, Y, speed_vis, T, n_indices=12,
+        fig = create_visualisation(X, Y, speed_vis, T, n_indices=8,
                                    vmin=vmin_speed, vmax=vmax_speed,
                                    title_prefix="Speed Magnitude (from u,v)")
-    
     plt.savefig("turbulent_flow_visualization.png", dpi=150, bbox_inches='tight')
     print(f"  ✓ Saved visualization to turbulent_flow_visualization.png")
     plt.close()

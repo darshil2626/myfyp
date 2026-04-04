@@ -17,8 +17,8 @@ import matplotlib.animation as animation
 # -------------------------
 # Config
 # -------------------------
-PKL_PATH = "test_reconstruction_results.pkl"
-GIF_PATH = "test_reconstruction_turb_flow_500t.gif"
+PKL_PATH = "test_reconstruction_results_500t.pkl"
+GIF_PATH = "test_reconstruction_turb_500t.gif"
 FPS = 20
 
 
