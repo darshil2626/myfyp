@@ -21,7 +21,7 @@ import matplotlib.animation as animation
 # -------------------------
 PKL_PATH = "test_results_twostage.pkl"
 GIF_PATH = "twostage_reconstruction.gif"
-FPS = 10
+FPS = 15
 
 
 # -------------------------

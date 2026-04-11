@@ -820,12 +820,12 @@ if __name__ == "__main__":
     lr = 1e-3
     patch_dim = [15, 15, 15]
     num_patches = 150
-    epochs = 100
+    epochs = 50
     n_past_steps = 10
-    train_fraction = 0.8
+    train_fraction = 0.5
 
     # ---- Load data ----
-    data_path = r"c:\Users\darsh\Documents\fyp\myfyp\time_in_encoders_only\sst\numerical_data_sst.pkl"
+    data_path = r"c:\Users\darsh\Documents\fyp\myfyp\time_in_encoders_only\sst\sst_2023_2024_combined.pkl"
     with open(data_path, "rb") as f:
         data = pickle.load(f)
 

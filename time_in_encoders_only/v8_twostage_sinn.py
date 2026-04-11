@@ -26,6 +26,9 @@ import pickle
 import sys
 import os
 import importlib.util
+import matplotlib
+
+matplotlib.use("Agg")
 
 
 # =========================================================================
@@ -218,7 +221,7 @@ class ResidualCorrectorCNN:
 # =========================================================================
 if __name__ == "__main__":
     # ---- Config ----
-    SINN_FILE = "v3_bypass_sinn.py"  # path to bypass SINN file
+    SINN_FILE = "v8_bypass_sinn.py"  # path to bypass SINN file
 
     # Stage 1 config
     b_thick = 1
@@ -232,12 +235,12 @@ if __name__ == "__main__":
     lr = 1e-3
     patch_dim = [10, 10, 10]
     num_patches = 100
-    stage1_epochs = 20
+    stage1_epochs = 75
     n_past_steps = 5
     train_fraction = 0.5
 
     # Stage 2 config
-    stage2_epochs = 100
+    stage2_epochs = 200
     stage2_batch_size = 8
 
     # ---- Load data ----
@@ -267,7 +270,7 @@ if __name__ == "__main__":
 
     loss_history_s1 = solver.train(stage1_epochs, patch_dim, num_patches)
     print(f"\nStage 1 complete! Final loss: {loss_history_s1['total'][-1]:.6e}")
-    solver.plot_training_history(loss_history_s1, save_path="training_loss_stage1.png", show=True)
+    solver.plot_training_history(loss_history_s1, save_path="training_loss_stage1.png", show=False)
 
     # ---- Generate Stage 1 predictions for ALL training timesteps ----
     print("\nGenerating Stage 1 predictions for training data...")
@@ -373,7 +376,6 @@ if __name__ == "__main__":
     ax.set_yscale("log"); ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig("training_loss_stage2.png", dpi=300, bbox_inches="tight")
-    plt.show()
 
     # MAE over time comparison
     fig, ax = plt.subplots(figsize=(12, 5))
@@ -385,7 +387,6 @@ if __name__ == "__main__":
     ax.legend(); ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig("test_mae_comparison.png", dpi=300, bbox_inches="tight")
-    plt.show()
 
     # Field reconstructions: Stage 1 vs Combined
     for label, idx in [("early", 0), ("mid", len(test_results_combined)//2), ("late", -1)]:
@@ -425,7 +426,6 @@ if __name__ == "__main__":
         plt.suptitle(f"Two-Stage Reconstruction at t={t}", fontsize=14, y=1.01)
         plt.tight_layout()
         plt.savefig(f"twostage_{label}_t{t}.png", dpi=300, bbox_inches="tight")
-        plt.show()
 
     # Save results
     payload = {

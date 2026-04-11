@@ -5,6 +5,9 @@ from keras import layers
 from keras.layers import Dense, Input
 from keras.models import Model
 import pickle
+import matplotlib
+
+matplotlib.use("Agg")
 
 
 class sinn:
@@ -529,7 +532,7 @@ class sinn:
     # =========================================================================
     # Plotting
     # =========================================================================
-    def plot_training_history(self, loss_history, save_path=None, show=True):
+    def plot_training_history(self, loss_history, save_path=None, show=False):
         import matplotlib.pyplot as plt
         epochs = range(1, len(loss_history["total"]) + 1)
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -542,8 +545,6 @@ class sinn:
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        if show:
-            plt.show()
         return fig
 
     # =========================================================================
@@ -754,7 +755,7 @@ class sinn:
     # =========================================================================
     # Plotting
     # =========================================================================
-    def plot_field_reconstruction(self, results, save_path=None, show=True):
+    def plot_field_reconstruction(self, results, save_path=None, show=False):
         import matplotlib.pyplot as plt
         u_true = results["u_true"]
         u_pred = results["u_pred"]
@@ -783,11 +784,9 @@ class sinn:
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        if show:
-            plt.show()
         return fig
 
-    def plot_test_mae_over_time(self, test_results, save_path=None, show=True):
+    def plot_test_mae_over_time(self, test_results, save_path=None, show=False):
         import matplotlib.pyplot as plt
         t_indices = [r["t_index"] for r in test_results]
         maes = [r["mae"] for r in test_results]
@@ -799,8 +798,6 @@ class sinn:
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        if show:
-            plt.show()
         return fig
 
 
@@ -845,7 +842,7 @@ if __name__ == "__main__":
     # ---- Train ----
     loss_history = solver.train(epochs, patch_dim, num_patches)
     print(f"\nTraining complete! Final loss: {loss_history['total'][-1]:.6e}")
-    solver.plot_training_history(loss_history, save_path="training_loss_v3bp.png", show=True)
+    solver.plot_training_history(loss_history, save_path="training_loss_v3bp.png", show=False)
 
     # ---- Training sanity check ----
     train_mid = int(solver.train_time_indices[len(solver.train_time_indices) // 2])
