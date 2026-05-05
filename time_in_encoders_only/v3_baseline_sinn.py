@@ -792,9 +792,6 @@ if __name__ == "__main__":
         data = pickle.load(f)
 
     X = data["X"]; Y = data["Y"]; U = data["U"]; T = data["T"]
-    n_keep = 500
-    U = U[-n_keep:]; T = T[-n_keep:]
-    print(f"Using last {n_keep} timesteps. U shape: {np.asarray(U).shape}")
 
     # ---- Setup ----
     solver = sinn(X, Y, U, T, debug=False)

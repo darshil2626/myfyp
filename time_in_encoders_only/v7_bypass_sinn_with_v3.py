@@ -813,15 +813,31 @@ if __name__ == "__main__":
     include_t0 = True
     include_tT = True
     num_latentdim = 10
-    num_units = 256
+    num_units = 128
     num_layers = 3
     dropout = 0.0
     l2_reg = 1e-5
     lr = 1e-3
     patch_dim = [15, 15, 15]
-    num_patches = 150
+    num_patches = 100
     epochs = 50
     n_past_steps = 10
+    train_fraction = 0.5
+    
+    # ---- Config ----
+    b_thick = 1
+    include_t0 = True
+    include_tT = True
+    num_latentdim = 10
+    num_units = 128
+    num_layers = 3
+    dropout = 0.0
+    l2_reg = 1e-5
+    lr = 1e-3
+    patch_dim = [10, 10, 10]
+    num_patches = 100
+    epochs = 50
+    n_past_steps = 5
     train_fraction = 0.5
 
     # ---- Load data ----
@@ -830,9 +846,6 @@ if __name__ == "__main__":
         data = pickle.load(f)
 
     X = data["X"]; Y = data["Y"]; U = data["U"]; T = data["T"]
-    n_keep = 500
-    U = U[-n_keep:]; T = T[-n_keep:]
-    print(f"Using last {n_keep} timesteps. U shape: {np.asarray(U).shape}")
 
     # ---- Setup ----
     solver = sinn(X, Y, U, T, debug=False)
