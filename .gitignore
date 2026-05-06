@@ -3,3 +3,4 @@
 *.pkl
 /venv
 *.gif
+\atmospheric_data

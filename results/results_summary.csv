@@ -1,0 +1,2 @@
+Model,Notes,MAE (°C),MAE (°C) std,RMSE (°C),RMSE (°C) std,Bias (°C),Bias (°C) std,Max |err| (°C),Max |err| (°C) std,P99 |err| (°C),P99 |err| (°C) std,R²,R² std,Pattern r,Pattern r std
+v3 Baseline SINN,1 seed,0.981862,,1.160356,,-0.746198,,2.954108,,2.390922,,0.509262,,0.907343,
