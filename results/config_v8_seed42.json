@@ -1,0 +1,48 @@
+{
+  "DATA_PATH": "C:\\Users\\darsh\\Documents\\fyp\\myfyp\\sst_2022_2023_2024_combined.pkl",
+  "N_DAYS": {
+    "2022": 365,
+    "2023": 365,
+    "2024": 366
+  },
+  "TRAIN_RANGE": [
+    0,
+    365
+  ],
+  "TEST_RANGE": [
+    365,
+    1096
+  ],
+  "B_THICK": 1,
+  "INCLUDE_T0": true,
+  "INCLUDE_TT": true,
+  "MASK_RADIUS": 1,
+  "NUM_LATENTDIM": 10,
+  "NUM_UNITS": 128,
+  "NUM_LAYERS": 3,
+  "DROPOUT": 0.0,
+  "L2_REG": 1e-05,
+  "LR": 0.001,
+  "PATCH_DIM": [
+    10,
+    10,
+    10
+  ],
+  "NUM_PATCHES": 100,
+  "N_PAST_STEPS": 5,
+  "STAGE1_EPOCHS": 75,
+  "STAGE2_EPOCHS": 200,
+  "STAGE2_BATCH_SIZE": 8,
+  "EPS_STD": 1e-08,
+  "EPS_CHOL": 1e-06,
+  "EPS_EIG": 1e-08,
+  "NAN_CLAMP": 1000.0,
+  "INF_CLAMP_U": 1000000.0,
+  "GRAD_CLIP_NORM": 1.0,
+  "CG_TOL_FAST": 0.01,
+  "CG_MAXITER_FAST": 1000,
+  "CG_TOL_ACCURATE": 0.0001,
+  "CG_MAXITER_ACCURATE": 5000,
+  "model": "v8_bypass",
+  "seed": 42
+}

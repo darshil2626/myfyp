@@ -1,2 +1,5 @@
 Model,Notes,MAE (°C),MAE (°C) std,RMSE (°C),RMSE (°C) std,Bias (°C),Bias (°C) std,Max |err| (°C),Max |err| (°C) std,P99 |err| (°C),P99 |err| (°C) std,R²,R² std,Pattern r,Pattern r std
 v3 Baseline SINN,1 seed,0.981862,,1.160356,,-0.746198,,2.954108,,2.390922,,0.509262,,0.907343,
+v8 Bypass SINN,1 seed,0.837458,,1.020409,,-0.605498,,2.819858,,2.263508,,0.608117,,0.907838,
+Bypass SINN (Stage 1 of twostage),1 seed,0.837458,,1.020409,,-0.605498,,2.819858,,2.263508,,0.608117,,0.907838,
+Bypass SINN + CNN (Combined),1 seed,0.647121,,0.828764,,-0.457184,,3.126050,,2.225883,,0.783662,,0.932950,

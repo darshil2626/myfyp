@@ -1,5 +1,5 @@
 """
-Latent dimension ablation: train bypass SINN with r = 1, 3, 5, 10, 15.
+Latent dimension ablation: train v3 baseline SINN with r = 1, 3, 5, 10, 15.
 Single seed, saves results for each r value.
 
 Usage:
@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 
 from config import (
     ABLATION_LATENT_DIMS, DEFAULT_SEED, FIGURES_DIR, RESULTS_DIR,
-    SINN_V8_MODULE, STAGE1_EPOCHS, PATCH_DIM, NUM_PATCHES, ensure_dirs,
+    SINN_V3_MODULE, STAGE1_EPOCHS, PATCH_DIM, NUM_PATCHES, ensure_dirs,
 )
 from utils import (
     set_seed, load_sinn_class, load_data, setup_sinn,
@@ -31,7 +31,7 @@ ensure_dirs()
 
 
 def main():
-    sinn_class = load_sinn_class(SINN_V8_MODULE)
+    sinn_class = load_sinn_class(SINN_V3_MODULE)
     data = load_data()
 
     all_results = {}
@@ -77,7 +77,7 @@ def main():
                     xytext=(0, 10), ha="center", fontsize=9)
     ax.set_xlabel("Number of latent dimensions (r)", fontsize=12)
     ax.set_ylabel("Mean Test MAE", fontsize=12)
-    ax.set_title("Latent Dimension Ablation (bypass SINN)", fontsize=13)
+    ax.set_title("Latent Dimension Ablation (v3 baseline SINN)", fontsize=13)
     ax.set_xticks(rs)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()

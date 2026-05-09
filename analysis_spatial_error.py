@@ -41,7 +41,27 @@ def main():
     data = load_data()
     U = np.asarray(data["U"], dtype=np.float32)
 
-    ts_data = load_results(f"test_results_twostage_seed{DEFAULT_SEED}.pkl")
+    # Prefer twostage results (has both stage1 and combined predictions).
+    # Fall back to v8 bypass results if twostage hasn't been run yet —
+    # in that case stage1 and combined are identical (no CNN correction).
+    twostage_pkl = f"test_results_twostage_seed{DEFAULT_SEED}.pkl"
+    v8_pkl = f"test_results_v8_seed{DEFAULT_SEED}.pkl"
+
+    try:
+        ts_data = load_results(twostage_pkl)
+        has_combined = True
+        print(f"[info] Loaded twostage results ({twostage_pkl})")
+    except FileNotFoundError:
+        try:
+            ts_data = load_results(v8_pkl)
+            has_combined = False
+            print(f"[info] Twostage results not found; falling back to v8 bypass ({v8_pkl})")
+            print("[info] Stage 1 and combined panels will be identical until twostage is run.")
+        except FileNotFoundError:
+            print(f"ERROR: Neither {twostage_pkl} nor {v8_pkl} found in results/. "
+                  "Run run_v8_bypass.py or run_twostage.py first.")
+            return
+
     results = ts_data["results"]
     test_indices = ts_data["test_time_indices"]
 
@@ -53,7 +73,9 @@ def main():
     count = 0
 
     for r in results:
-        s1_err = np.abs(r["u_pred_stage1"] - r["u_true"])
+        # twostage results have u_pred_stage1; v8-only results use u_pred for both
+        s1_pred = r.get("u_pred_stage1", r["u_pred"])
+        s1_err = np.abs(s1_pred - r["u_true"])
         combined_err = np.abs(r["u_pred"] - r["u_true"])
         s1_error_sum += s1_err
         combined_error_sum += combined_err
@@ -86,9 +108,11 @@ def main():
     axes[0, 0].set_title("Stage 1 SINN — Time-Averaged |Error|", fontsize=11)
     fig.colorbar(im0, ax=axes[0, 0], label="MAE (°C)")
 
+    combined_title = ("Stage 1 + Stage 2 — Time-Averaged |Error|" if has_combined
+                      else "Stage 1 Only — Time-Averaged |Error| (no CNN yet)")
     im1 = axes[0, 1].imshow(combined_error_avg, cmap="hot", origin="lower",
                               vmin=0, vmax=err_vmax, aspect="auto")
-    axes[0, 1].set_title("Stage 1 + Stage 2 — Time-Averaged |Error|", fontsize=11)
+    axes[0, 1].set_title(combined_title, fontsize=11)
     fig.colorbar(im1, ax=axes[0, 1], label="MAE (°C)")
 
     im2 = axes[1, 0].imshow(grad_mag, cmap="viridis", origin="lower", aspect="auto")
@@ -123,6 +147,78 @@ def main():
              combined_error_avg=combined_error_avg,
              grad_mag=grad_mag)
     print("Saved spatial_error_fields.npz")
+
+    # ---- Bonus figure: v3 baseline vs twostage side-by-side ----
+    # Requires both v3 and twostage result pkls to exist
+    v3_pkl       = f"test_results_v3_seed{DEFAULT_SEED}.pkl"
+    ts_pkl       = f"test_results_twostage_seed{DEFAULT_SEED}.pkl"
+    try:
+        v3_data = load_results(v3_pkl)
+        ts_data = load_results(ts_pkl)
+
+        v3_results  = v3_data["results"]
+        ts_results  = ts_data["results"]
+        ts_indices  = ts_data["test_time_indices"]
+
+        # Build index map so we align timesteps
+        ts_t_map = {r["t_index"]: r for r in ts_results}
+
+        v3_sum = np.zeros((ny, nx), dtype=np.float64)
+        diff_sum = np.zeros((ny, nx), dtype=np.float64)
+        n = 0
+        for r_v3 in v3_results:
+            t = r_v3["t_index"]
+            if t not in ts_t_map:
+                continue
+            r_ts = ts_t_map[t]
+            v3_sum  += np.abs(r_v3["u_pred"] - r_v3["u_true"])
+            diff_sum += (np.abs(r_ts["u_pred"] - r_ts["u_true"]) -
+                         np.abs(r_v3["u_pred"] - r_v3["u_true"]))
+            n += 1
+
+        if n > 0:
+            v3_avg   = (v3_sum  / n).astype(np.float32)
+            diff_avg = (diff_sum / n).astype(np.float32)
+            v3_avg[obs_mask]   = np.nan
+            diff_avg[obs_mask] = np.nan
+
+            fig2, axes2 = plt.subplots(1, 3, figsize=(18, 5))
+            ev = np.nanpercentile(np.maximum(v3_avg, combined_error_avg), 95)
+            dv = np.nanpercentile(np.abs(diff_avg), 95)
+
+            im = axes2[0].imshow(v3_avg, cmap="hot", origin="lower",
+                                  vmin=0, vmax=ev, aspect="auto")
+            axes2[0].set_title("v3 Baseline — Time-Avg |Error|", fontsize=12)
+            fig2.colorbar(im, ax=axes2[0], label="MAE (°C)", fraction=0.046)
+
+            im = axes2[1].imshow(combined_error_avg, cmap="hot", origin="lower",
+                                  vmin=0, vmax=ev, aspect="auto")
+            axes2[1].set_title("Two-Stage — Time-Avg |Error|", fontsize=12)
+            fig2.colorbar(im, ax=axes2[1], label="MAE (°C)", fraction=0.046)
+
+            im = axes2[2].imshow(diff_avg, cmap="RdBu_r", origin="lower",
+                                  vmin=-dv, vmax=dv, aspect="auto")
+            axes2[2].set_title("Difference (two-stage − baseline)\nBlue = improvement",
+                               fontsize=12)
+            fig2.colorbar(im, ax=axes2[2], label="ΔMAE (°C)", fraction=0.046)
+
+            for ax in axes2:
+                ax.axis("off")
+
+            fig2.suptitle(
+                f"Spatial Error: v3 Baseline vs Two-Stage ({n} test timesteps)\n"
+                f"Baseline MAE: {np.nanmean(v3_avg[~obs_mask]):.4f} °C  |  "
+                f"Two-Stage MAE: {np.nanmean(combined_error_avg[~obs_mask]):.4f} °C",
+                fontsize=13, fontweight="bold"
+            )
+            plt.tight_layout()
+            out2 = f"{FIGURES_DIR}/spatial_error_v3_vs_twostage.png"
+            plt.savefig(out2, dpi=300, bbox_inches="tight")
+            plt.close()
+            print(f"Saved {out2}")
+
+    except FileNotFoundError as e:
+        print(f"[info] Skipping v3 vs twostage comparison: {e}")
 
 
 if __name__ == "__main__":

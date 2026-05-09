@@ -42,10 +42,17 @@ def main():
     parser.add_argument("--load", action="store_true", help="Load both stages")
     parser.add_argument("--load-stage1", action="store_true", help="Load Stage 1 only, train Stage 2")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--stage1-prefix", type=str, default=None,
+                        help="Override Stage 1 weight prefix (e.g. v8_seed42)")
     args = parser.parse_args()
     set_seed(args.seed)  # Explicit per-run seed control
 
-    prefix_s1 = f"twostage_s1_seed{args.seed}"
+    if args.stage1_prefix:
+        prefix_s1 = args.stage1_prefix
+    elif args.load_stage1:
+        prefix_s1 = f"v8_seed{args.seed}"          # weights from run_v8_bypass.py
+    else:
+        prefix_s1 = f"twostage_s1_seed{args.seed}"  # weights saved by this script
     prefix_s2 = f"twostage_s2_seed{args.seed}"
     prefix = f"twostage_seed{args.seed}"
 

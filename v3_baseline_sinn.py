@@ -638,7 +638,21 @@ class sinn:
     # =========================================================================
     # Reconstruction (independent per timestep — no autoregressive)
     # =========================================================================
-    def reconstruct_field_at_timestep(self, t_index, use_fast_solver=False):
+    def reconstruct_field_at_timestep(self, t_index, use_fast_solver=False,
+                                       return_latent=False, boundary_noise_sigma=0.0):
+        """
+        Reconstruct the SST field at a single timestep.
+
+        Args:
+            t_index: integer timestep index into U_original
+            use_fast_solver: if True, use loose CG tolerances (fast, slightly less accurate)
+            return_latent: if True, include 'latent_field' in the returned dict —
+                           a (ny, nx, latent_dim) array of interior latent values
+                           (NaN at boundary pixels). Used for latent field visualisation.
+            boundary_noise_sigma: if > 0, add zero-mean Gaussian noise with this std (°C)
+                                  to observed boundary values before encoding. Used for
+                                  boundary noise robustness experiments.
+        """
         t = int(t_index)
 
         # Use cached spatial structure (built in split_interior_boundary)
@@ -655,6 +669,11 @@ class sinn:
         boundary_x = boundary_indices[:, 1].astype(np.int32)
         boundary_t = np.full(num_boundary, t, dtype=np.int32)
         u_boundary_raw = self.U_original[boundary_t, boundary_y, boundary_x].astype(np.float32)
+
+        # Optional: inject boundary noise for robustness experiments
+        if boundary_noise_sigma > 0.0:
+            u_boundary_raw = u_boundary_raw + np.random.normal(
+                0.0, boundary_noise_sigma, u_boundary_raw.shape).astype(np.float32)
 
         # Encode boundary — reuse _stack_mask_patch_features_from_idx (no duplication)
         idx_bnd = np.stack([boundary_t, boundary_y, boundary_x], axis=1).astype(np.int32)
@@ -711,7 +730,7 @@ class sinn:
         u_err = np.abs(u_pred - u_true)
         int_err = u_err[interior_y, interior_x]
 
-        return {
+        result = {
             "u_pred": u_pred, "u_true": u_true, "u_error": u_err,
             "boundary_mask": obs_mask, "interior_mask": ~obs_mask,
             "mse": float(np.mean(int_err**2)),
@@ -719,6 +738,15 @@ class sinn:
             "max_error": float(np.max(int_err)),
             "t_index": t,
         }
+
+        if return_latent:
+            # Assemble (ny, nx, latent_dim) array; NaN at boundary pixels
+            latent_full = np.full((self.ny, self.nx, latent_interior.shape[1]),
+                                  np.nan, dtype=np.float32)
+            latent_full[interior_y, interior_x, :] = latent_interior
+            result["latent_field"] = latent_full
+
+        return result
 
     # =========================================================================
     # Evaluation
