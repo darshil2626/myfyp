@@ -5,7 +5,18 @@
       "Bash(venv/Scripts/python.exe -m pip freeze)",
       "Bash(venv/Scripts/python.exe analysis_boundary_timeseries.py)",
       "Bash(venv/Scripts/python.exe analysis_a_matrix.py)",
-      "Bash(PYTHONIOENCODING=utf-8 venv/Scripts/python.exe analysis_seasonal_error.py)"
+      "Bash(PYTHONIOENCODING=utf-8 venv/Scripts/python.exe analysis_seasonal_error.py)",
+      "Bash(python -c \"import pickle; data = pickle.load\\(open\\('results/ablation_patch_size_results.pkl', 'rb'\\)\\); print\\(type\\(data\\)\\); print\\(data.keys\\(\\) if hasattr\\(data, 'keys'\\) else dir\\(data\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python analysis_ablation_patch_size.py)",
+      "Bash(python analysis_ablation_latent_dim.py)",
+      "Bash(python analysis_boundary_timeseries.py)",
+      "Bash(venv/Scripts/python.exe -c ' *)",
+      "Bash(venv/Scripts/python.exe -c \"import cartopy; print\\('cartopy', cartopy.__version__\\)\")",
+      "Bash(venv/Scripts/python.exe plot_domain_overview.py)",
+      "Bash(python animate_results.py results/test_results_small_domain_125_seed42.pkl --fps 10)",
+      "Bash(python analysis_small_domain_field.py)",
+      "Bash(python animate_results.py results/test_results_v8_seed42.pkl)"
     ]
   }
 }

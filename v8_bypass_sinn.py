@@ -686,15 +686,21 @@ class sinn:
         u_boundary_raw = self.U_original[boundary_t, boundary_y, boundary_x].astype(np.float32)
 
         # Optional: inject boundary noise for robustness experiments
+        noise_std_injected = None
         if boundary_noise_sigma > 0.0:
-            u_boundary_raw = u_boundary_raw + np.random.normal(
+            noise = np.random.normal(
                 0.0, boundary_noise_sigma, u_boundary_raw.shape).astype(np.float32)
+            u_boundary_raw = u_boundary_raw + noise
+            # Inject noise into self.U (standardised) so the encoder sees it
+            noise_std_injected = noise / self.U_std[boundary_y, boundary_x]
+            self.U[t, boundary_y, boundary_x] += noise_std_injected
 
         # Encode boundary — reuse _stack_mask_patch_features_from_idx (no duplication)
         idx_bnd = np.stack([boundary_t, boundary_y, boundary_x], axis=1).astype(np.int32)
         bnd_feats = self._stack_mask_patch_features_from_idx(idx_bnd, apply_obs_mask=True)
         bnd_latents = self.boundary_encoder(tf.constant(bnd_feats, tf.float32), training=False).numpy()
         bnd_latents = np.nan_to_num(bnd_latents, nan=0.0, posinf=NAN_CLAMP, neginf=-NAN_CLAMP)
+
         latent_dim = bnd_latents.shape[1]
 
         # A matrix (per-call since weights change during training; negligible cost)
@@ -732,6 +738,7 @@ class sinn:
 
         # --- Decoder bypass: harmonic interpolation of standardised boundary values ---
         # Reuses same K and preconditioner — one additional CG solve for the scalar field
+        # self.U still holds noisy values here (restore happens after this block)
         bnd_u_std = self.U[t, boundary_y, boundary_x].astype(np.float64)
         rhs_phys = np.zeros(num_interior, dtype=np.float64)
         for rid in range(num_interior):
@@ -739,6 +746,10 @@ class sinn:
             if len(bids) > 0:
                 rhs_phys[rid] = bnd_u_std[bids].sum()
         u_interp, _ = cg(K, rhs_phys, M=M_pre, tol=tol, maxiter=maxiter)
+
+        # Restore self.U after both encoder and bypass have used the noisy boundary
+        if noise_std_injected is not None:
+            self.U[t, boundary_y, boundary_x] -= noise_std_injected
         u_interp = u_interp.astype(np.float32).reshape(-1, 1)
 
         # Decode with bypass

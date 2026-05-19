@@ -671,15 +671,24 @@ class sinn:
         u_boundary_raw = self.U_original[boundary_t, boundary_y, boundary_x].astype(np.float32)
 
         # Optional: inject boundary noise for robustness experiments
+        noise_std_injected = None
         if boundary_noise_sigma > 0.0:
-            u_boundary_raw = u_boundary_raw + np.random.normal(
+            noise = np.random.normal(
                 0.0, boundary_noise_sigma, u_boundary_raw.shape).astype(np.float32)
+            u_boundary_raw = u_boundary_raw + noise
+            # Inject noise into self.U (standardised) so the encoder sees it
+            noise_std_injected = noise / self.U_std[boundary_y, boundary_x]
+            self.U[t, boundary_y, boundary_x] += noise_std_injected
 
         # Encode boundary — reuse _stack_mask_patch_features_from_idx (no duplication)
         idx_bnd = np.stack([boundary_t, boundary_y, boundary_x], axis=1).astype(np.int32)
         bnd_feats = self._stack_mask_patch_features_from_idx(idx_bnd, apply_obs_mask=True)
         bnd_latents = self.boundary_encoder(tf.constant(bnd_feats, tf.float32), training=False).numpy()
         bnd_latents = np.nan_to_num(bnd_latents, nan=0.0, posinf=NAN_CLAMP, neginf=-NAN_CLAMP)
+
+        # Restore self.U after encoding
+        if noise_std_injected is not None:
+            self.U[t, boundary_y, boundary_x] -= noise_std_injected
         latent_dim = bnd_latents.shape[1]
 
         # A matrix (per-call since weights change during training; negligible cost)
