@@ -16,7 +16,10 @@
       "Bash(venv/Scripts/python.exe plot_domain_overview.py)",
       "Bash(python animate_results.py results/test_results_small_domain_125_seed42.pkl --fps 10)",
       "Bash(python analysis_small_domain_field.py)",
-      "Bash(python animate_results.py results/test_results_v8_seed42.pkl)"
+      "Bash(python animate_results.py results/test_results_v8_seed42.pkl)",
+      "Bash(findstr \"twostage\")",
+      "Bash(python analysis_latent_dims.py results/test_results_v3_seed42.pkl)",
+      "Bash(python analysis_latent_dims.py results/test_results_small_domain_125_seed42.pkl)"
     ]
   }
 }
