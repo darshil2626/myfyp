@@ -1,6 +1,21 @@
+# Data files
 *.nc
 *.am
 *.pkl
-/venv
 *.gif
-\atmospheric_data
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+/venv
+/.venv
+
+# Model weights (large binary files)
+*.weights.h5
+*.npy
+
+# Legacy data directories
+/atmospheric_data
