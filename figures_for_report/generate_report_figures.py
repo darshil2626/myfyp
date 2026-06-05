@@ -385,7 +385,7 @@ def fig_seasonal():
         im = ax.pcolormesh(X, Y, fld, cmap=S.CMAP_SST, vmin=vmin, vmax=vmax,
                            shading="auto", rasterized=True)
         ax.set_xlabel("Longitude (°E)"); ax.set_ylabel("Latitude (°N)")
-        S.panel_label(ax, name, loc="upper left")
+        ax.set_title(name)
     cb = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.85, pad=0.02)
     cb.set_label("SST (°C)")
     S.save(fig, "sst_seasonal_2022.png")
@@ -403,16 +403,16 @@ def _field_triple(results_pkl, t_index, out_name, geo=False):
     ny, nx = true.shape
     wide = nx / ny > 3
     if wide:   # thin strip -> stack rows
-        fig, axes = plt.subplots(3, 1, figsize=(12, 9))
+        fig, axes = plt.subplots(3, 1, figsize=(14, 6), constrained_layout=True)
     else:
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5.2))
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5.2), constrained_layout=True)
 
     im0 = S.plot_field(axes[0], true, S.CMAP_SST, vmin, vmax)
-    S.panel_label(axes[0], "True SST")
+    axes[0].set_title("True SST")
     im1 = S.plot_field(axes[1], pred, S.CMAP_SST, vmin, vmax)
-    S.panel_label(axes[1], "SINN prediction")
+    axes[1].set_title("SINN prediction")
     im2 = S.plot_field(axes[2], err, S.CMAP_ERROR, 0, evmax)
-    S.panel_label(axes[2], "Absolute error")
+    axes[2].set_title("Absolute error")
 
     if wide:
         S.cbar(fig, im0, axes[0], "SST (°C)", fraction=0.025, pad=0.01)
@@ -422,7 +422,6 @@ def _field_triple(results_pkl, t_index, out_name, geo=False):
         S.cbar(fig, im0, axes[0], "SST (°C)", fraction=0.046, pad=0.02)
         S.cbar(fig, im1, axes[1], "SST (°C)", fraction=0.046, pad=0.02)
         S.cbar(fig, im2, axes[2], "|error| (°C)", fraction=0.046, pad=0.02)
-    fig.tight_layout()
     S.save(fig, out_name)
 
 
@@ -440,20 +439,20 @@ def fig_spatial_error():
     z = np.load(os.path.join(RESULTS_DIR, "spatial_error_fields.npz"))
     s1, comb, grad = z["s1_error_avg"], z["combined_error_avg"], z["grad_mag"]
     evmax = np.nanpercentile(s1, 95)
-    fig, ax = plt.subplots(2, 2, figsize=(13.5, 11))
+    fig, ax = plt.subplots(2, 2, figsize=(13.5, 11), constrained_layout=True)
 
     im0 = ax[0, 0].imshow(s1, cmap=S.CMAP_ERROR, origin="lower", vmin=0,
-                          vmax=evmax, aspect="auto")
-    S.panel_label(ax[0, 0], "Stage 1 — time-avg |error|")
+                          vmax=evmax, aspect="equal")
+    ax[0, 0].set_title("Stage 1 — time-avg |error|")
     S.cbar(fig, im0, ax[0, 0], "MAE (°C)", fraction=0.046, pad=0.02)
 
     im1 = ax[0, 1].imshow(comb, cmap=S.CMAP_ERROR, origin="lower", vmin=0,
-                          vmax=evmax, aspect="auto")
-    S.panel_label(ax[0, 1], "Two-stage — time-avg |error|")
+                          vmax=evmax, aspect="equal")
+    ax[0, 1].set_title("Two-stage — time-avg |error|")
     S.cbar(fig, im1, ax[0, 1], "MAE (°C)", fraction=0.046, pad=0.02)
 
-    im2 = ax[1, 0].imshow(grad, cmap=S.CMAP_GRAD, origin="lower", aspect="auto")
-    S.panel_label(ax[1, 0], "Time-avg |∇SST|")
+    im2 = ax[1, 0].imshow(grad, cmap=S.CMAP_SST, origin="lower", aspect="equal")
+    ax[1, 0].set_title("Time-avg |∇SST|")
     S.cbar(fig, im2, ax[1, 0], "|∇SST| (°C / cell)", fraction=0.046, pad=0.02)
 
     gi = grad.copy().ravel(); ei = s1.copy().ravel()
@@ -462,11 +461,10 @@ def fig_spatial_error():
     ax[1, 1].scatter(gi[m], ei[m], s=2, alpha=0.3, color=S.NAVY, rasterized=True)
     ax[1, 1].set_xlabel("|∇SST| (°C / cell)")
     ax[1, 1].set_ylabel("Stage 1 MAE (°C)")
-    S.panel_label(ax[1, 1], f"r = {r:.3f}", loc="upper right")
+    ax[1, 1].set_title(f"r = {r:.3f}")
     S.grid(ax[1, 1])
     for a in (ax[0, 0], ax[0, 1], ax[1, 0]):
-        a.set_xlabel("grid column"); a.set_ylabel("grid row")
-    fig.tight_layout()
+        a.set_xlabel("x"); a.set_ylabel("y")
     S.save(fig, "spatial_error_decomposition.png")
     print(f"    [spatial error] error-gradient r = {r:.3f}")
 
@@ -536,8 +534,8 @@ def fig_latent_dims():
             # so each component is shown on its own scale to reveal structure.
             vmax = np.nanpercentile(np.abs(lat[:, :, k]), 99)
             im = ax.imshow(lat[:, :, k], cmap=S.CMAP_DIV, origin="lower",
-                           vmin=-vmax, vmax=vmax, aspect="auto")
-            S.panel_label(ax, f"$\\ell_{{{k+1}}}$")
+                           vmin=-vmax, vmax=vmax, aspect="equal")
+            ax.set_title(f"$\\ell_{{{k+1}}}$")
             ax.set_xticks([]); ax.set_yticks([])
             cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
             cb.ax.tick_params(labelsize=9)
@@ -545,6 +543,64 @@ def fig_latent_dims():
             ax.axis("off")
     fig.tight_layout()
     S.save(fig, "latent_dims_v3_seed42_mid_t730_crop.png")
+
+
+def fig_combined_small_domain():
+    """Full-domain true SST at t=1095 with crop box (left) + small-domain
+    triple (right: true SST, prediction, absolute error at t=1095)."""
+    v3 = _load(f"test_results_v3_seed{DEFAULT_SEED}.pkl")
+    rec_full = next(r for r in v3["results"] if r["t_index"] == 1095)
+    true_full = rec_full["u_true"]
+
+    d = _load("small_domain_results_125.pkl")
+    cr = d["crop_region"]
+    cy, cx = d["error_centre"]
+
+    sd = _load(f"test_results_small_domain_125_seed{DEFAULT_SEED}.pkl")
+    rec_sd = next(r for r in sd["results"] if r["t_index"] == 1095)
+    true_sd = rec_sd["u_true"]
+    pred_sd = rec_sd["u_pred"]
+    err_sd  = np.abs(rec_sd["u_error"])
+
+    vmin_f  = np.nanpercentile(true_full, 2)
+    vmax_f  = np.nanpercentile(true_full, 98)
+    all_sd  = np.concatenate([true_sd.ravel(), pred_sd.ravel()])
+    vmin_s  = np.nanpercentile(all_sd, 2)
+    vmax_s  = np.nanpercentile(all_sd, 98)
+    evmax_s = np.nanpercentile(err_sd.ravel(), 98)
+
+    fig = plt.figure(figsize=(18, 8), constrained_layout=True)
+    gs  = fig.add_gridspec(3, 2, width_ratios=[1.4, 1])
+
+    ax_l  = fig.add_subplot(gs[:, 0])
+    ax_r0 = fig.add_subplot(gs[0, 1])
+    ax_r1 = fig.add_subplot(gs[1, 1])
+    ax_r2 = fig.add_subplot(gs[2, 1])
+
+    im_f = ax_l.imshow(true_full, cmap=S.CMAP_SST, vmin=vmin_f, vmax=vmax_f,
+                        origin="lower", aspect="equal", interpolation="nearest")
+    ax_l.set_title("True SST at $t=1095$ (full domain)")
+    rect = mpatches.Rectangle(
+        (cr["x_start"], cr["y_start"]),
+        cr["x_end"] - cr["x_start"], cr["y_end"] - cr["y_start"],
+        fill=False, edgecolor=S.HIGHLIGHT, lw=2.5)
+    ax_l.add_patch(rect)
+    ax_l.plot(cx, cy, "x", color=S.HIGHLIGHT, ms=14, mew=3)
+    ax_l.set_xlabel("x"); ax_l.set_ylabel("y")
+    S.cbar(fig, im_f, ax_l, "SST (°C)", fraction=0.046, pad=0.02)
+
+    for ax, fld, cmap, vmin, vmax, title, clbl in [
+            (ax_r0, true_sd, S.CMAP_SST,   vmin_s,  vmax_s,  "True SST",        "SST (°C)"),
+            (ax_r1, pred_sd, S.CMAP_SST,   vmin_s,  vmax_s,  "SINN prediction", "SST (°C)"),
+            (ax_r2, err_sd,  S.CMAP_ERROR,  0,       evmax_s, "Absolute error",  "|error| (°C)"),
+    ]:
+        im = ax.imshow(fld, cmap=cmap, vmin=vmin, vmax=vmax,
+                       origin="lower", aspect="equal", interpolation="nearest")
+        ax.set_title(title)
+        ax.set_xlabel("x"); ax.set_ylabel("y")
+        S.cbar(fig, im, ax, clbl, fraction=0.025, pad=0.01)
+
+    S.save(fig, "combined_small_domain_125.png")
 
 
 def fig_world_overview():
@@ -597,9 +653,8 @@ ALL = {
     "enso": fig_enso_comparison,
     "seasonal": fig_seasonal,
     "field_v3": fig_field_v3,
-    "field_small": fig_field_small_domain,
+    "combined_small": fig_combined_small_domain,
     "spatial_error": fig_spatial_error,
-    "region": fig_small_domain_region,
     "latent_dims": fig_latent_dims,
     "world": fig_world_overview,
 }

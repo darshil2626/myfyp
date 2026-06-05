@@ -36,8 +36,8 @@ OUT_DIR = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 # Colour maps by quantity type
 # ---------------------------------------------------------------------------
-CMAP_SST   = cmocean.cm.thermal     # absolute SST fields
-CMAP_ERROR = cmocean.cm.amp         # |error| / MAE magnitude fields
+CMAP_SST   = cmocean.cm.haline      # absolute SST fields (blue/green)
+CMAP_ERROR = cmocean.cm.solar       # |error| / MAE magnitude fields (black/yellow)
 CMAP_GRAD  = cmocean.cm.tempo       # SST gradient magnitude
 CMAP_DIV   = cmocean.cm.balance     # signed fields (latent components, anomalies)
 
@@ -45,7 +45,7 @@ CMAP_DIV   = cmocean.cm.balance     # signed fields (latent components, anomalie
 LAND_COLOUR = "#d9d9d9"
 
 # Colour for overlays (crop boxes, markers) that must read on any background
-HIGHLIGHT = "#00C2C7"
+HIGHLIGHT = "#E03030"
 
 # ---------------------------------------------------------------------------
 # Line palette — Okabe-Ito (colourblind-safe), with named roles
@@ -118,9 +118,9 @@ def plot_field(ax, field, cmap, vmin=None, vmax=None, X=None, Y=None,
         ax.set_aspect("auto")
     else:
         im = ax.imshow(field, cmap=cmap, vmin=vmin, vmax=vmax,
-                       origin="lower", aspect="auto", interpolation="nearest")
-        ax.set_xlabel("grid column")
-        ax.set_ylabel("grid row")
+                       origin="lower", aspect="equal", interpolation="nearest")
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
     return im
 
 
